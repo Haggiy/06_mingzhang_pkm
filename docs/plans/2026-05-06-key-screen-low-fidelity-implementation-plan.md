@@ -2,13 +2,27 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 基于已确认的信息架构，产出可供后续视觉稿或 iOS 原型使用的关键页面低保真线框与主路径检查材料。
+**Goal:** 基于已确认的信息架构，产出可供后续 iOS 原型继续推进的关键页面结构文档、主路径检查材料和 image2 生成的 App 感页面图像稿。
 
-**Architecture:** 以 `docs/work-plans/key-screen-low-fidelity-design.md` 为单一设计输入，按全局规则、五个一级入口、跨入口主路径三层推进。所有页面仍然只做结构和入口，不进入高保真视觉、SwiftUI、数据库或 API 设计。
+**Architecture:** 以 `docs/work-plans/key-screen-low-fidelity-design.md` 为单一设计输入，按全局规则、五个一级入口、跨入口主路径三层推进。页面图像稿使用 image2 直接生成，作为低保真到视觉方向之间的结构化 App 截图草案；不进入 SwiftUI、数据库或 API 设计。
 
-**Tech Stack:** Markdown 文档；必要时使用 Mermaid 或纯文字线框；验证方式为文档结构检查、关键词检查和 MVP 验收场景人工串联。
+**Tech Stack:** Markdown 文档；image2 图像生成；参考图像位于 `design/archive/homepage-20260427/`；验证方式为文档结构检查、关键词检查、MVP 验收场景人工串联和生成图像人工审查。
 
 ---
+
+## 图像生成硬性要求
+
+执行本计划时，Codex 必须直接使用 image2 的图像生成能力生成页面图像稿。
+
+要求：
+
+- 不允许只写图像提示词让用户自行生成。
+- 不允许只停留在文字线框。
+- 生成图像必须看起来像真实 iOS App 页面，而不是流程图、白板图、PPT 或低保真灰框草图。
+- 整体画风参考 `design/archive/homepage-20260427/主页设计-v20260427-v1.png` 到 `v4.png`。
+- 风格关键词：白色背景、轻玻璃质感、柔和阴影、8-16px 圆角卡片、清晰 iOS 状态栏、底部 Tab、克制图标、金融数据表格感、中文界面、真实 App 截图感。
+- 页面内容必须来自 `docs/work-plans/key-screen-low-fidelity-design.md`，不能凭空增加预算、AI、预测、复杂看板等已排除能力。
+- 生成图像保存到 `design/key-screen-low-fidelity/`，文件名使用 `YYYY-MM-DD-入口-页面.png`。
 
 ### Task 1: 固化设计输入与全局规则
 
@@ -57,6 +71,10 @@ git commit -m "Refine key screen global rules"
 **Files:**
 
 - Modify: `docs/work-plans/key-screen-low-fidelity-design.md`
+- Read: `design/archive/homepage-20260427/主页设计-v20260427-v1.png`
+- Read: `design/archive/homepage-20260427/主页设计-v20260427-v2.png`
+- Read: `design/archive/homepage-20260427/主页设计-v20260427-v3.png`
+- Read: `design/archive/homepage-20260427/主页设计-v20260427-v4.png`
 
 **Step 1: 首页线框检查**
 
@@ -116,7 +134,125 @@ git commit -m "Refine low fidelity wireframes"
 
 ---
 
-### Task 3: 增加主路径流转表
+### Task 3: 使用 image2 生成关键页面图像稿
+
+**Files:**
+
+- Read: `docs/work-plans/key-screen-low-fidelity-design.md`
+- Read: `design/archive/homepage-20260427/主页设计-v20260427-v1.png`
+- Read: `design/archive/homepage-20260427/主页设计-v20260427-v2.png`
+- Read: `design/archive/homepage-20260427/主页设计-v20260427-v3.png`
+- Read: `design/archive/homepage-20260427/主页设计-v20260427-v4.png`
+- Create: `design/key-screen-low-fidelity/2026-05-06-首页.png`
+- Create: `design/key-screen-low-fidelity/2026-05-06-流水.png`
+- Create: `design/key-screen-low-fidelity/2026-05-06-资产负债.png`
+- Create: `design/key-screen-low-fidelity/2026-05-06-统计.png`
+- Create: `design/key-screen-low-fidelity/2026-05-06-设置.png`
+
+**Step 1: 创建输出目录**
+
+Run:
+
+```bash
+mkdir -p design/key-screen-low-fidelity
+```
+
+**Step 2: 生成首页图像稿**
+
+直接调用 image2 生成 `首页` 页面图像。
+
+图像必须包含：
+
+- 顶部账月范围。
+- 收支摘要。
+- 收支结构。
+- 最近账目。
+- 轻量 `+` 快捷入口。
+- 底部 Tab。
+
+风格必须参考 `design/archive/homepage-20260427/` 中的既有稿子。
+
+Expected: 保存为 `design/key-screen-low-fidelity/2026-05-06-首页.png`。
+
+**Step 3: 生成流水图像稿**
+
+直接调用 image2 生成 `流水` 页面图像。
+
+图像必须包含：
+
+- 顶部账月范围。
+- 记录列表两行结构。
+- 固定行浅底色和左侧细竖线。
+- 底部浮动操作条：搜索 / 点击这里记一笔 / 筛选。
+- 底部 Tab。
+
+Expected: 保存为 `design/key-screen-low-fidelity/2026-05-06-流水.png`。
+
+**Step 4: 生成资产负债图像稿**
+
+直接调用 image2 生成 `资产负债` 页面图像。
+
+图像必须包含：
+
+- 资产合计、负债合计、净资产。
+- 资产块。
+- 负债块。
+- 投资块。
+- 底部 Tab。
+
+Expected: 保存为 `design/key-screen-low-fidelity/2026-05-06-资产负债.png`。
+
+**Step 5: 生成统计图像稿**
+
+直接调用 image2 生成 `统计` 页面图像。
+
+图像必须包含：
+
+- 结果总览。
+- 收支结构。
+- 资产负债变化。
+- 投资结果。
+- 底部 Tab。
+
+Expected: 保存为 `design/key-screen-low-fidelity/2026-05-06-统计.png`。
+
+**Step 6: 生成设置图像稿**
+
+直接调用 image2 生成 `设置` 页面图像。
+
+图像必须包含：
+
+- 记账配置：账户、科目。
+- 数据管理：数据导出、数据导入、数据清空。
+- App 设置：外观、隐私、安全、关于。
+- 底部 Tab。
+
+Expected: 保存为 `design/key-screen-low-fidelity/2026-05-06-设置.png`。
+
+**Step 7: 人工审查生成结果**
+
+逐张检查：
+
+- 是否像真实 App 截图。
+- 是否与 `design/archive/homepage-20260427/` 画风一致。
+- 是否没有加入已排除功能。
+- 是否中文文案清晰。
+- 是否没有明显错字、重叠、变形或乱码。
+
+不合格的图像必须重新用 image2 生成。
+
+**Step 8: 提交**
+
+Run:
+
+```bash
+git add design/key-screen-low-fidelity
+git commit -m "Generate key screen low fidelity app images"
+```
+
+---
+
+### Task 4: 增加主路径流转表
 
 **Files:**
 
@@ -151,7 +287,7 @@ git commit -m "Add key screen scenario walkthrough"
 
 ---
 
-### Task 4: 整理跨入口复用对象
+### Task 5: 整理跨入口复用对象
 
 **Files:**
 
@@ -189,7 +325,7 @@ git commit -m "Document reusable key screen objects"
 
 ---
 
-### Task 5: 收口待确认问题
+### Task 6: 收口待确认问题
 
 **Files:**
 
@@ -223,4 +359,3 @@ Run:
 git add docs/work-plans/key-screen-low-fidelity-design.md docs/research/open-questions.md
 git commit -m "Organize key screen open questions"
 ```
-
