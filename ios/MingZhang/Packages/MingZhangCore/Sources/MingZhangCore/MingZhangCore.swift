@@ -635,101 +635,77 @@ public final class LedgerUseCases: @unchecked Sendable {
     @discardableResult
     private func recalculateAccountMonth(_ accountMonth: String) throws -> EngineRecalculationResult {
         try database.writer.write { db in
-            let deletedIds = try String.fetchAll(
-                db,
-                sql: "SELECT id FROM journal_records WHERE account_month = ? AND record_source = ?",
-                arguments: [accountMonth, RecordSource.engine.rawValue]
-            ).compactMap(UUID.init(uuidString:))
-
-            try db.execute(
-                sql: "DELETE FROM journal_records WHERE account_month = ? AND record_source = ?",
-                arguments: [accountMonth, RecordSource.engine.rawValue]
-            )
-
             let rows = try fetchSourceRecordsWithSemantics(db, accountMonth: accountMonth)
             let now = Date()
             let accountingMethod = try requirePaymentMethod(db, name: "账务处理")
             let defaultType = try requirePaymentType(db, name: "生活必要开支")
             let defaultDetail = try requirePaymentDetail(db, name: "伙食费", paymentTypeId: defaultType.id)
             var createdIds: [UUID] = []
+            var updatedIds: [UUID] = []
+            var deletedIds: [UUID] = []
 
-            let liabilityGroups = Dictionary(grouping: rows) { row in
-                row.paymentMethod.methodType == .liability && row.paymentType.element == .expense
-                    ? row.paymentMethod.name
-                    : ""
-            }.filter { !$0.key.isEmpty }
+            let expectedDrafts = makeP0EngineDrafts(accountMonth: accountMonth, rows: rows)
+            let existingRecords = try fetchP0EngineRecords(db, accountMonth: accountMonth)
+            let existingRecordsByKey = Dictionary(
+                uniqueKeysWithValues: existingRecords.compactMap { record in
+                    record.engineKey.map { ($0, record) }
+                }
+            )
+            let expectedKeys = Set(expectedDrafts.map(\.engineKey))
 
-            for (methodName, groupedRows) in liabilityGroups {
-                let amount = groupedRows.reduce(Decimal(0)) { $0 + $1.record.amount }
-                guard amount != Decimal(0) else { continue }
-                let sourceIds = groupedRows.map(\.record.id).sorted { $0.uuidString < $1.uuidString }
-                let id = UUID()
-                let objectKey = "liability:\(methodName)"
-                let engineKey = "\(accountMonth):liability:ending_balance:\(objectKey)"
-                let record = JournalRecord(
-                    id: id,
-                    accountMonth: accountMonth,
-                    occurredAt: monthEndPlaceholder(accountMonth),
-                    paymentMethodId: accountingMethod.id,
-                    paymentMethodName: accountingMethod.name,
-                    amount: amount,
-                    paymentTypeId: defaultType.id,
-                    paymentTypeName: defaultType.name,
-                    paymentDetailId: defaultDetail.id,
-                    paymentDetailName: defaultDetail.name,
-                    note: "\(methodName) 负债期末余额",
-                    recordSource: .engine,
-                    recordKind: .carryForward,
-                    carryForwardRole: .accountingSkeleton,
-                    engineFamily: .liability,
-                    engineKey: engineKey,
-                    objectKey: objectKey,
-                    sourceRecordIds: sourceIds,
-                    createdAt: now,
-                    updatedAt: now
-                )
-                try insertJournalRecord(db, record: record)
-                createdIds.append(id)
+            for draft in expectedDrafts {
+                if let existing = existingRecordsByKey[draft.engineKey] {
+                    guard engineRecordNeedsUpdate(
+                        existing,
+                        draft: draft,
+                        accountingMethod: accountingMethod,
+                        paymentType: defaultType,
+                        paymentDetail: defaultDetail
+                    ) else {
+                        continue
+                    }
+                    let updatedRecord = makeEngineRecord(
+                        draft: draft,
+                        id: existing.id,
+                        accountingMethod: accountingMethod,
+                        paymentType: defaultType,
+                        paymentDetail: defaultDetail,
+                        createdAt: existing.createdAt,
+                        updatedAt: now
+                    )
+                    try persistJournalRecordUpdate(db, record: updatedRecord)
+                    updatedIds.append(existing.id)
+                } else {
+                    let id = UUID()
+                    let record = makeEngineRecord(
+                        draft: draft,
+                        id: id,
+                        accountingMethod: accountingMethod,
+                        paymentType: defaultType,
+                        paymentDetail: defaultDetail,
+                        createdAt: now,
+                        updatedAt: now
+                    )
+                    try insertJournalRecord(db, record: record)
+                    createdIds.append(id)
+                }
             }
 
-            let cashRows = rows.filter {
-                $0.paymentMethod.methodType == .asset && $0.paymentType.element == .expense
-            }
-            let cashAmount = cashRows.reduce(Decimal(0)) { $0 - $1.record.amount }
-            if cashAmount != Decimal(0) {
-                let sourceIds = cashRows.map(\.record.id).sorted { $0.uuidString < $1.uuidString }
-                let id = UUID()
-                let objectKey = "cash_pool:电子钱包余额"
-                let record = JournalRecord(
-                    id: id,
-                    accountMonth: accountMonth,
-                    occurredAt: monthEndPlaceholder(accountMonth),
-                    paymentMethodId: accountingMethod.id,
-                    paymentMethodName: accountingMethod.name,
-                    amount: cashAmount,
-                    paymentTypeId: defaultType.id,
-                    paymentTypeName: defaultType.name,
-                    paymentDetailId: defaultDetail.id,
-                    paymentDetailName: defaultDetail.name,
-                    note: "现金池期末余额",
-                    recordSource: .engine,
-                    recordKind: .carryForward,
-                    carryForwardRole: .accountingSkeleton,
-                    engineFamily: .cash,
-                    engineKey: "\(accountMonth):cash:ending_balance:\(objectKey)",
-                    objectKey: objectKey,
-                    sourceRecordIds: sourceIds,
-                    createdAt: now,
-                    updatedAt: now
-                )
-                try insertJournalRecord(db, record: record)
-                createdIds.append(id)
+            for existing in existingRecords {
+                guard let engineKey = existing.engineKey, expectedKeys.contains(engineKey) else {
+                    try db.execute(
+                        sql: "DELETE FROM journal_records WHERE id = ?",
+                        arguments: [existing.id.uuidString]
+                    )
+                    deletedIds.append(existing.id)
+                    continue
+                }
             }
 
             return EngineRecalculationResult(
                 recalculatedMonths: [accountMonth],
                 createdEngineRecordIds: createdIds,
-                updatedEngineRecordIds: [],
+                updatedEngineRecordIds: updatedIds,
                 deletedEngineRecordIds: deletedIds,
                 warnings: []
             )
@@ -748,6 +724,17 @@ private struct SemanticRecordRow {
     var paymentMethod: PaymentMethod
     var paymentType: PaymentType
     var paymentDetail: PaymentDetail
+}
+
+private struct EngineRecordDraft {
+    var accountMonth: String
+    var occurredAt: Date
+    var amount: Decimal
+    var note: String
+    var engineFamily: EngineFamily
+    var engineKey: String
+    var objectKey: String
+    var sourceRecordIds: [UUID]
 }
 
 private let selectJournalRecordSQL = """
@@ -904,6 +891,128 @@ private func fetchSourceRecordsWithSemantics(_ db: Database, accountMonth: Strin
             paymentDetail: try requirePaymentDetail(db, id: record.paymentDetailId)
         )
     }
+}
+
+private func fetchP0EngineRecords(_ db: Database, accountMonth: String) throws -> [JournalRecord] {
+    try Row.fetchAll(db, sql: """
+        \(selectJournalRecordSQL)
+        WHERE journal_records.account_month = ?
+          AND journal_records.record_source = ?
+          AND journal_records.engine_family IN (?, ?)
+        ORDER BY journal_records.engine_key ASC
+        """, arguments: [
+            accountMonth,
+            RecordSource.engine.rawValue,
+            EngineFamily.cash.rawValue,
+            EngineFamily.liability.rawValue
+        ])
+        .map(journalRecord(from:))
+}
+
+private func makeP0EngineDrafts(accountMonth: String, rows: [SemanticRecordRow]) -> [EngineRecordDraft] {
+    var drafts: [EngineRecordDraft] = []
+    let occurredAt = monthEndPlaceholder(accountMonth)
+    let liabilityRows = rows.filter {
+        $0.paymentMethod.methodType == .liability && $0.paymentType.element == .expense
+    }
+    let liabilityGroups = Dictionary(grouping: liabilityRows) { $0.paymentMethod.name }
+
+    for methodName in liabilityGroups.keys.sorted() {
+        let groupedRows = liabilityGroups[methodName] ?? []
+        let amount = groupedRows.reduce(Decimal(0)) { $0 + $1.record.amount }
+        guard amount != Decimal(0) else { continue }
+
+        let objectKey = "liability:\(methodName)"
+        drafts.append(EngineRecordDraft(
+            accountMonth: accountMonth,
+            occurredAt: occurredAt,
+            amount: amount,
+            note: "\(methodName) 负债期末余额",
+            engineFamily: .liability,
+            engineKey: "\(accountMonth):liability:ending_balance:\(objectKey)",
+            objectKey: objectKey,
+            sourceRecordIds: groupedRows.map(\.record.id).sorted { $0.uuidString < $1.uuidString }
+        ))
+    }
+
+    let cashRows = rows.filter {
+        $0.paymentMethod.methodType == .asset && $0.paymentType.element == .expense
+    }
+    let cashAmount = cashRows.reduce(Decimal(0)) { $0 - $1.record.amount }
+    if cashAmount != Decimal(0) {
+        let objectKey = "cash_pool:电子钱包余额"
+        drafts.append(EngineRecordDraft(
+            accountMonth: accountMonth,
+            occurredAt: occurredAt,
+            amount: cashAmount,
+            note: "现金池期末余额",
+            engineFamily: .cash,
+            engineKey: "\(accountMonth):cash:ending_balance:\(objectKey)",
+            objectKey: objectKey,
+            sourceRecordIds: cashRows.map(\.record.id).sorted { $0.uuidString < $1.uuidString }
+        ))
+    }
+
+    return drafts.sorted { $0.engineKey < $1.engineKey }
+}
+
+private func makeEngineRecord(
+    draft: EngineRecordDraft,
+    id: UUID,
+    accountingMethod: PaymentMethod,
+    paymentType: PaymentType,
+    paymentDetail: PaymentDetail,
+    createdAt: Date,
+    updatedAt: Date
+) -> JournalRecord {
+    JournalRecord(
+        id: id,
+        accountMonth: draft.accountMonth,
+        occurredAt: draft.occurredAt,
+        paymentMethodId: accountingMethod.id,
+        paymentMethodName: accountingMethod.name,
+        amount: draft.amount,
+        paymentTypeId: paymentType.id,
+        paymentTypeName: paymentType.name,
+        paymentDetailId: paymentDetail.id,
+        paymentDetailName: paymentDetail.name,
+        note: draft.note,
+        recordSource: .engine,
+        recordKind: .carryForward,
+        carryForwardRole: .accountingSkeleton,
+        engineFamily: draft.engineFamily,
+        engineKey: draft.engineKey,
+        objectKey: draft.objectKey,
+        sourceRecordIds: draft.sourceRecordIds,
+        createdAt: createdAt,
+        updatedAt: updatedAt
+    )
+}
+
+private func engineRecordNeedsUpdate(
+    _ record: JournalRecord,
+    draft: EngineRecordDraft,
+    accountingMethod: PaymentMethod,
+    paymentType: PaymentType,
+    paymentDetail: PaymentDetail
+) -> Bool {
+    record.accountMonth != draft.accountMonth ||
+        record.occurredAt != draft.occurredAt ||
+        record.paymentMethodId != accountingMethod.id ||
+        record.paymentMethodName != accountingMethod.name ||
+        record.amount != draft.amount ||
+        record.paymentTypeId != paymentType.id ||
+        record.paymentTypeName != paymentType.name ||
+        record.paymentDetailId != paymentDetail.id ||
+        record.paymentDetailName != paymentDetail.name ||
+        record.note != draft.note ||
+        record.recordSource != .engine ||
+        record.recordKind != .carryForward ||
+        record.carryForwardRole != .accountingSkeleton ||
+        record.engineFamily != draft.engineFamily ||
+        record.engineKey != draft.engineKey ||
+        record.objectKey != draft.objectKey ||
+        record.sourceRecordIds != draft.sourceRecordIds
 }
 
 private func requirePaymentMethod(_ db: Database, name: String) throws -> PaymentMethod {

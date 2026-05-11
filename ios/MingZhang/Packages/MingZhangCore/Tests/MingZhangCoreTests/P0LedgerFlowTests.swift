@@ -189,6 +189,84 @@ final class P0LedgerFlowTests: XCTestCase {
         XCTAssertEqual(engineRecords.first?.sourceRecordIds, [record.id])
     }
 
+    func testEngineRecalculationUpsertsExistingKeyWithoutDuplicates() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let record = try useCases.createManualRecord(input: sampleInput(amount: Decimal(100)))
+        let initialEngineRecord = try XCTUnwrap(try engineRecords(useCases).first)
+
+        let repeatedResult = try useCases.recalculateAfterMutation(
+            Mutation(recordId: record.id, mutationType: .update)
+        )
+        var records = try engineRecords(useCases)
+
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records.first?.id, initialEngineRecord.id)
+        XCTAssertEqual(records.first?.engineKey, initialEngineRecord.engineKey)
+        XCTAssertTrue(repeatedResult.createdEngineRecordIds.isEmpty)
+        XCTAssertTrue(repeatedResult.updatedEngineRecordIds.isEmpty)
+        XCTAssertTrue(repeatedResult.deletedEngineRecordIds.isEmpty)
+
+        try useCases.updateJournalRecord(
+            id: record.id,
+            changes: JournalRecordChanges(amount: Decimal(120))
+        )
+        records = try engineRecords(useCases)
+
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records.first?.id, initialEngineRecord.id)
+        XCTAssertEqual(records.first?.amount, Decimal(120))
+        XCTAssertEqual(records.first?.sourceRecordIds, [record.id])
+    }
+
+    func testEngineRecalculationDeletesStaleKeyWhenFamilyChanges() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let record = try useCases.createManualRecord(input: sampleInput(amount: Decimal(100)))
+        XCTAssertEqual(try engineRecords(useCases).map(\.engineKey), [
+            "2026-04:liability:ending_balance:liability:广发卡"
+        ])
+
+        try useCases.updateJournalRecord(
+            id: record.id,
+            changes: JournalRecordChanges(paymentMethodName: "电子钱包余额")
+        )
+
+        let records = try engineRecords(useCases)
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records.first?.engineKey, "2026-04:cash:ending_balance:cash_pool:电子钱包余额")
+        XCTAssertEqual(records.first?.amount, Decimal(-100))
+        XCTAssertEqual(records.first?.sourceRecordIds, [record.id])
+    }
+
+    func testEngineRecalculationAggregatesMultipleSourcesAndDeletesEmptyKey() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let first = try useCases.createManualRecord(input: sampleInput(amount: Decimal(100)))
+        let second = try useCases.createManualRecord(input: sampleInput(amount: Decimal(50)))
+        var records = try engineRecords(useCases)
+
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records.first?.amount, Decimal(150))
+        XCTAssertEqual(records.first?.sourceRecordIds.sorted { $0.uuidString < $1.uuidString }, [first.id, second.id].sorted { $0.uuidString < $1.uuidString })
+
+        try useCases.deleteJournalRecord(id: first.id)
+        records = try engineRecords(useCases)
+
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records.first?.amount, Decimal(50))
+        XCTAssertEqual(records.first?.sourceRecordIds, [second.id])
+
+        try useCases.deleteJournalRecord(id: second.id)
+        XCTAssertTrue(try engineRecords(useCases).isEmpty)
+    }
+
     func testValidationRejectsInvalidManualRecordInputs() throws {
         let database = try LedgerDatabase.inMemory()
         let useCases = LedgerUseCases(database: database)
@@ -305,6 +383,14 @@ final class P0LedgerFlowTests: XCTestCase {
                     now
                 ])
         }
+    }
+
+    private func engineRecords(_ useCases: LedgerUseCases) throws -> [JournalRecord] {
+        try useCases.queryJournalRecords(
+            filter: JournalRecordFilter(accountMonths: ["2026-04"], includeEngineRecords: true)
+        )
+        .filter { $0.recordSource == .engine }
+        .sorted { ($0.engineKey ?? "") < ($1.engineKey ?? "") }
     }
 }
 
