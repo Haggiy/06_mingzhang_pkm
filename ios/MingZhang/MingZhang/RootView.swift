@@ -142,10 +142,21 @@ struct JournalView: View {
     @EnvironmentObject private var store: LedgerStore
     @State private var isShowingForm = false
     @State private var isShowingMonthPicker = false
+    @State private var isShowingFilter = false
 
     var body: some View {
         NavigationStack {
             List {
+                if store.journalFilter != JournalRecordFilter(accountMonths: [store.accountMonth]) {
+                    Section("当前筛选") {
+                        Button {
+                            _ = store.clearJournalFilter()
+                        } label: {
+                            Label("清除筛选", systemImage: "xmark.circle")
+                        }
+                    }
+                }
+
                 if store.records.isEmpty {
                     ContentUnavailableView("当前账月暂无流水", systemImage: "tray")
                 } else {
@@ -160,6 +171,13 @@ struct JournalView: View {
             }
             .navigationTitle("流水")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        isShowingFilter = true
+                    } label: {
+                        Label("筛选", systemImage: "line.3.horizontal.decrease.circle")
+                    }
+                }
                 ToolbarItem(placement: .principal) {
                     Button {
                         isShowingMonthPicker = true
@@ -184,7 +202,118 @@ struct JournalView: View {
             .sheet(isPresented: $isShowingMonthPicker) {
                 MonthPickerView()
             }
+            .sheet(isPresented: $isShowingFilter) {
+                JournalFilterView()
+            }
         }
+    }
+}
+
+struct JournalFilterInput: Equatable {
+    var paymentMethodName = ""
+    var paymentTypeName = ""
+    var paymentDetailName = ""
+    var amountMinText = ""
+    var amountMaxText = ""
+    var noteKeyword = ""
+
+    func toFilter(accountMonth: String) throws -> JournalRecordFilter {
+        JournalRecordFilter(
+            accountMonths: [accountMonth],
+            paymentMethodNames: paymentMethodName.isEmpty ? [] : [paymentMethodName],
+            paymentTypeNames: paymentTypeName.isEmpty ? [] : [paymentTypeName],
+            paymentDetailNames: paymentDetailName.isEmpty ? [] : [paymentDetailName],
+            amountMin: try parseOptionalDecimal(amountMinText, fieldName: "最小金额"),
+            amountMax: try parseOptionalDecimal(amountMaxText, fieldName: "最大金额"),
+            noteKeyword: noteKeyword.isEmpty ? nil : noteKeyword
+        )
+    }
+
+    private func parseOptionalDecimal(_ value: String, fieldName: String) throws -> Decimal? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let amount = Decimal(string: trimmed, locale: Locale(identifier: "en_US_POSIX")) else {
+            throw MingZhangError.validation("\(fieldName)必须是有效数字")
+        }
+        return amount
+    }
+}
+
+struct JournalFilterView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var input = JournalFilterInput()
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("条件") {
+                    Picker("收付手段", selection: $input.paymentMethodName) {
+                        Text("全部").tag("")
+                        ForEach(store.methods) { method in
+                            Text(method.name).tag(method.name)
+                        }
+                    }
+                    Picker("收付类型", selection: $input.paymentTypeName) {
+                        Text("全部").tag("")
+                        ForEach(store.types) { type in
+                            Text(type.name).tag(type.name)
+                        }
+                    }
+                    Picker("类型明细", selection: $input.paymentDetailName) {
+                        Text("全部").tag("")
+                        ForEach(filteredDetails) { detail in
+                            Text(detail.name).tag(detail.name)
+                        }
+                    }
+                    TextField("最小金额", text: $input.amountMinText)
+                        .keyboardType(.decimalPad)
+                    TextField("最大金额", text: $input.amountMaxText)
+                        .keyboardType(.decimalPad)
+                    TextField("备注关键词", text: $input.noteKeyword)
+                }
+
+                Section {
+                    Button("重置") {
+                        input = JournalFilterInput()
+                        if store.clearJournalFilter() {
+                            dismiss()
+                        }
+                    }
+                }
+            }
+            .navigationTitle("筛选")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("应用") {
+                        do {
+                            if store.applyJournalFilter(try input.toFilter(accountMonth: store.accountMonth)) {
+                                dismiss()
+                            }
+                        } catch {
+                            store.lastError = error.localizedDescription
+                        }
+                    }
+                }
+            }
+            .onChange(of: input.paymentTypeName) {
+                if !filteredDetails.contains(where: { $0.name == input.paymentDetailName }) {
+                    input.paymentDetailName = ""
+                }
+            }
+        }
+    }
+
+    private var filteredDetails: [PaymentDetail] {
+        guard let typeId = store.types.first(where: { $0.name == input.paymentTypeName })?.id else {
+            return store.details
+        }
+        return store.details.filter { $0.paymentTypeId == typeId }
     }
 }
 
