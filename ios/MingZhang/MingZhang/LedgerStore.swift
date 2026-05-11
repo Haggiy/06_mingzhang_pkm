@@ -41,6 +41,11 @@ final class LedgerStore: ObservableObject {
         lastError = nil
     }
 
+    func querySourceRecords(recordIds: [UUID]) throws -> [JournalRecord] {
+        guard let useCases else { return [] }
+        return try useCases.queryJournalRecords(recordIds: recordIds)
+    }
+
     func createRecord(input: JournalFormInput) -> Bool {
         do {
             guard let useCases else { return false }

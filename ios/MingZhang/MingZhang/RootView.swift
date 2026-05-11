@@ -150,10 +150,10 @@ struct JournalFormView: View {
 
     var body: some View {
         Form {
-            Section("账目") {
-                TextField("账月", text: $input.accountMonth)
-                    .textInputAutocapitalization(.never)
-                DatePicker("时间", selection: $input.occurredAt)
+                Section("账目") {
+                    TextField("账月", text: $input.accountMonth)
+                        .textInputAutocapitalization(.never)
+                    DatePicker("时间", selection: $input.occurredAt)
                 Picker("收付手段", selection: $input.paymentMethodName) {
                     ForEach(store.methods) { method in
                         Text(method.name).tag(method.name)
@@ -161,18 +161,18 @@ struct JournalFormView: View {
                 }
                 TextField("金额", text: $input.amountText)
                     .keyboardType(.decimalPad)
-                Picker("收付类型", selection: $input.paymentTypeName) {
-                    ForEach(store.types) { type in
-                        Text(type.name).tag(type.name)
+                    Picker("收付类型", selection: $input.paymentTypeName) {
+                        ForEach(store.types) { type in
+                            Text(type.name).tag(type.name)
+                        }
                     }
-                }
-                Picker("类型明细", selection: $input.paymentDetailName) {
-                    ForEach(store.details) { detail in
-                        Text(detail.name).tag(detail.name)
+                    Picker("类型明细", selection: $input.paymentDetailName) {
+                        ForEach(availableDetails) { detail in
+                            Text(detail.name).tag(detail.name)
+                        }
                     }
+                    TextField("备注", text: $input.note, axis: .vertical)
                 }
-                TextField("备注", text: $input.note, axis: .vertical)
-            }
 
             if case .edit = mode {
                 Section {
@@ -207,6 +207,12 @@ struct JournalFormView: View {
         } message: {
             Text("删除后会重新计算当前账月结果。")
         }
+        .onAppear {
+            normalizeDetailSelection()
+        }
+        .onChange(of: input.paymentTypeName) {
+            normalizeDetailSelection()
+        }
     }
 
     private var modeTitle: String {
@@ -226,6 +232,18 @@ struct JournalFormView: View {
             return store.updateRecord(id: record.id, input: input)
         }
     }
+
+    private var availableDetails: [PaymentDetail] {
+        guard let typeId = store.types.first(where: { $0.name == input.paymentTypeName })?.id else {
+            return store.details
+        }
+        return store.details.filter { $0.paymentTypeId == typeId }
+    }
+
+    private func normalizeDetailSelection() {
+        guard !availableDetails.contains(where: { $0.name == input.paymentDetailName }) else { return }
+        input.paymentDetailName = availableDetails.first?.name ?? ""
+    }
 }
 
 struct BalanceView: View {
@@ -235,7 +253,19 @@ struct BalanceView: View {
         NavigationStack {
             List {
                 Section("资产") {
-                    SummaryRow(title: "现金类资产", value: store.balanceSummary.cashBalance)
+                    if store.balanceSummary.cashSourceRecordIds.isEmpty {
+                        SummaryRow(title: "现金类资产", value: store.balanceSummary.cashBalance)
+                    } else {
+                        NavigationLink {
+                            SourceRecordsView(
+                                title: "现金类资产来源",
+                                filterDescription: "\(store.accountMonth) / 现金类资产",
+                                recordIds: store.balanceSummary.cashSourceRecordIds
+                            )
+                        } label: {
+                            SummaryRow(title: "现金类资产", value: store.balanceSummary.cashBalance)
+                        }
+                    }
                 }
 
                 Section("负债") {
@@ -243,17 +273,78 @@ struct BalanceView: View {
                         ContentUnavailableView("暂无负债", systemImage: "creditcard")
                     } else {
                         ForEach(store.balanceSummary.liabilityItems, id: \.name) { item in
-                            VStack(alignment: .leading, spacing: 4) {
-                                SummaryRow(title: item.name, value: item.amount)
-                                Text("来源流水 \(item.sourceRecordIds.count) 条")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                            if item.sourceRecordIds.isEmpty {
+                                BalanceItemRow(item: item)
+                            } else {
+                                NavigationLink {
+                                    SourceRecordsView(
+                                        title: "\(item.name) 来源",
+                                        filterDescription: "\(store.accountMonth) / \(item.name)",
+                                        recordIds: item.sourceRecordIds
+                                    )
+                                } label: {
+                                    BalanceItemRow(item: item)
+                                }
                             }
                         }
                     }
                 }
             }
             .navigationTitle("资产负债")
+        }
+    }
+}
+
+struct BalanceItemRow: View {
+    let item: BalanceItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            SummaryRow(title: item.name, value: item.amount)
+            Text("来源流水 \(item.sourceRecordIds.count) 条")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct SourceRecordsView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let title: String
+    let filterDescription: String
+    let recordIds: [UUID]
+    @State private var records: [JournalRecord] = []
+
+    var body: some View {
+        List {
+            Section("筛选") {
+                Text(filterDescription)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("来源记录") {
+                if records.isEmpty {
+                    ContentUnavailableView("暂无来源流水", systemImage: "tray")
+                } else {
+                    ForEach(records) { record in
+                        NavigationLink {
+                            JournalFormView(mode: .edit(record))
+                        } label: {
+                            JournalRecordRow(record: record)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle(title)
+        .onAppear(perform: loadRecords)
+    }
+
+    private func loadRecords() {
+        do {
+            records = try store.querySourceRecords(recordIds: recordIds)
+        } catch {
+            store.lastError = error.localizedDescription
         }
     }
 }
@@ -269,7 +360,19 @@ struct StatisticsView: View {
                         ContentUnavailableView("暂无支出", systemImage: "chart.bar")
                     } else {
                         ForEach(store.statisticsSummary.expenseByType, id: \.typeName) { item in
-                            SummaryRow(title: item.typeName, value: item.amount)
+                            if item.sourceRecordIds.isEmpty {
+                                SummaryRow(title: item.typeName, value: item.amount)
+                            } else {
+                                NavigationLink {
+                                    SourceRecordsView(
+                                        title: "\(item.typeName) 来源",
+                                        filterDescription: "\(store.accountMonth) / \(item.typeName)",
+                                        recordIds: item.sourceRecordIds
+                                    )
+                                } label: {
+                                    SummaryRow(title: item.typeName, value: item.amount)
+                                }
+                            }
                         }
                     }
                 }
