@@ -49,11 +49,17 @@ final class P0LedgerFlowTests: XCTestCase {
         XCTAssertEqual(balance.liabilityItems, [
             BalanceItem(name: "广发卡", amount: Decimal(100), sourceRecordIds: [record.id])
         ])
-        XCTAssertEqual(statistics.expenseByType["生活必要开支"], Decimal(100))
+        XCTAssertEqual(statistics.expenseByType, [
+            ExpenseTypeSummary(typeName: "生活必要开支", amount: Decimal(100), sourceRecordIds: [record.id])
+        ])
         XCTAssertEqual(statistics.sourceRecordIds, [record.id])
         XCTAssertEqual(engineRecords.count, 1)
         XCTAssertEqual(engineRecords.first?.amount, Decimal(100))
         XCTAssertEqual(engineRecords.first?.engineKey, "2026-04:liability:ending_balance:liability:广发卡")
+        let sourceRecords = try useCases.queryJournalRecords(
+            recordIds: [record.id, try XCTUnwrap(engineRecords.first?.id)]
+        )
+        XCTAssertEqual(sourceRecords.map(\.id), [record.id])
 
         let updated = try useCases.updateJournalRecord(
             id: record.id,
@@ -72,7 +78,9 @@ final class P0LedgerFlowTests: XCTestCase {
         XCTAssertEqual(balance.liabilityItems, [
             BalanceItem(name: "广发卡", amount: Decimal(120), sourceRecordIds: [record.id])
         ])
-        XCTAssertEqual(statistics.expenseByType["生活必要开支"], Decimal(120))
+        XCTAssertEqual(statistics.expenseByType, [
+            ExpenseTypeSummary(typeName: "生活必要开支", amount: Decimal(120), sourceRecordIds: [record.id])
+        ])
         XCTAssertEqual(engineRecords.count, 1)
         XCTAssertEqual(engineRecords.first?.amount, Decimal(120))
 

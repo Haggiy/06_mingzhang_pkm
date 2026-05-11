@@ -197,19 +197,33 @@ public struct BalanceItem: Equatable, Sendable {
 
 public struct BalanceSummary: Equatable, Sendable {
     public var cashBalance: Decimal
+    public var cashSourceRecordIds: [UUID]
     public var liabilityItems: [BalanceItem]
 
-    public init(cashBalance: Decimal, liabilityItems: [BalanceItem]) {
+    public init(cashBalance: Decimal, cashSourceRecordIds: [UUID] = [], liabilityItems: [BalanceItem]) {
         self.cashBalance = cashBalance
+        self.cashSourceRecordIds = cashSourceRecordIds
         self.liabilityItems = liabilityItems
     }
 }
 
-public struct StatisticsSummary: Equatable, Sendable {
-    public var expenseByType: [String: Decimal]
+public struct ExpenseTypeSummary: Equatable, Sendable {
+    public var typeName: String
+    public var amount: Decimal
     public var sourceRecordIds: [UUID]
 
-    public init(expenseByType: [String: Decimal], sourceRecordIds: [UUID]) {
+    public init(typeName: String, amount: Decimal, sourceRecordIds: [UUID]) {
+        self.typeName = typeName
+        self.amount = amount
+        self.sourceRecordIds = sourceRecordIds
+    }
+}
+
+public struct StatisticsSummary: Equatable, Sendable {
+    public var expenseByType: [ExpenseTypeSummary]
+    public var sourceRecordIds: [UUID]
+
+    public init(expenseByType: [ExpenseTypeSummary], sourceRecordIds: [UUID]) {
         self.expenseByType = expenseByType
         self.sourceRecordIds = sourceRecordIds
     }
@@ -472,6 +486,23 @@ public final class LedgerUseCases: @unchecked Sendable {
         }
     }
 
+    public func queryJournalRecords(recordIds: [UUID], includeEngineRecords: Bool = false) throws -> [JournalRecord] {
+        guard !recordIds.isEmpty else { return [] }
+
+        return try database.writer.read { db in
+            var sql = selectJournalRecordSQL + " WHERE journal_records.id IN \(sqlPlaceholders(recordIds.count))"
+            var arguments = StatementArguments(recordIds.map(\.uuidString))
+            if !includeEngineRecords {
+                sql += " AND journal_records.record_source != ?"
+                arguments += [RecordSource.engine.rawValue]
+            }
+
+            let records = try Row.fetchAll(db, sql: sql, arguments: arguments).map(journalRecord(from:))
+            let recordsById = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
+            return recordIds.compactMap { recordsById[$0] }
+        }
+    }
+
     public func getJournalRecordDetail(id: UUID) throws -> JournalRecord {
         try database.writer.read { db in
             try requireJournalRecord(db, id: id)
@@ -507,6 +538,10 @@ public final class LedgerUseCases: @unchecked Sendable {
         let cashBalance = engineRecords
             .filter { $0.engineFamily == .cash }
             .reduce(Decimal(0)) { $0 + $1.amount }
+        let cashSourceRecordIds = engineRecords
+            .filter { $0.engineFamily == .cash }
+            .flatMap(\.sourceRecordIds)
+            .sorted { $0.uuidString < $1.uuidString }
 
         let liabilities = engineRecords
             .filter { $0.engineFamily == .liability }
@@ -519,7 +554,11 @@ public final class LedgerUseCases: @unchecked Sendable {
             }
             .sorted { $0.name < $1.name }
 
-        return BalanceSummary(cashBalance: cashBalance, liabilityItems: liabilities)
+        return BalanceSummary(
+            cashBalance: cashBalance,
+            cashSourceRecordIds: cashSourceRecordIds,
+            liabilityItems: liabilities
+        )
     }
 
     public func queryStatisticsSummary(accountMonth: String) throws -> StatisticsSummary {
@@ -527,14 +566,26 @@ public final class LedgerUseCases: @unchecked Sendable {
             .filter { $0.paymentType.element == .expense }
 
         var expenseByType: [String: Decimal] = [:]
+        var sourceIdsByType: [String: [UUID]] = [:]
         var sourceRecordIds: [UUID] = []
         for row in rows {
             expenseByType[row.paymentType.name, default: Decimal(0)] += row.record.amount
+            sourceIdsByType[row.paymentType.name, default: []].append(row.record.id)
             sourceRecordIds.append(row.record.id)
         }
+        let expenseSummaries = expenseByType
+            .filter { $0.value != Decimal(0) }
+            .map { typeName, amount in
+                ExpenseTypeSummary(
+                    typeName: typeName,
+                    amount: amount,
+                    sourceRecordIds: (sourceIdsByType[typeName] ?? []).sorted { $0.uuidString < $1.uuidString }
+                )
+            }
+            .sorted { $0.typeName < $1.typeName }
 
         return StatisticsSummary(
-            expenseByType: expenseByType.filter { $0.value != Decimal(0) },
+            expenseByType: expenseSummaries,
             sourceRecordIds: sourceRecordIds.sorted { $0.uuidString < $1.uuidString }
         )
     }
