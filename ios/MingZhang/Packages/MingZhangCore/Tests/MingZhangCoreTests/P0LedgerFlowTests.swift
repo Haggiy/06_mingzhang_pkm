@@ -22,6 +22,18 @@ final class P0LedgerFlowTests: XCTestCase {
         XCTAssertEqual(details.first { $0.name == "伙食费" }?.paymentTypeId, types.first { $0.name == "生活必要开支" }?.id)
     }
 
+    func testQueryAccountMonthsReturnsDistinctMonthsDescending() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        _ = try useCases.createManualRecord(input: sampleInput(accountMonth: "2026-03", amount: Decimal(80)))
+        _ = try useCases.createManualRecord(input: sampleInput(accountMonth: "2026-04", amount: Decimal(100)))
+        _ = try useCases.createManualRecord(input: sampleInput(accountMonth: "2026-04", amount: Decimal(50)))
+
+        XCTAssertEqual(try useCases.queryAccountMonths(), ["2026-04", "2026-03"])
+    }
+
     func testCreditCardExpenseCreatesLiabilityAndRecalculates() throws {
         let database = try LedgerDatabase.inMemory()
         let useCases = LedgerUseCases(database: database)

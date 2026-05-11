@@ -391,6 +391,17 @@ public final class LedgerUseCases: @unchecked Sendable {
         }
     }
 
+    public func queryAccountMonths() throws -> [String] {
+        try database.writer.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT DISTINCT account_month
+                FROM journal_records
+                WHERE record_source != ?
+                ORDER BY account_month DESC
+                """, arguments: [RecordSource.engine.rawValue])
+        }
+    }
+
     @discardableResult
     public func createManualRecord(input: CreateManualRecordInput) throws -> JournalRecord {
         let record = try database.writer.write { db in
