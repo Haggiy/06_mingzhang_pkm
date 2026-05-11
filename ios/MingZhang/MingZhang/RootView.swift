@@ -511,10 +511,10 @@ struct BalanceView: View {
                         SummaryRow(title: "现金类资产", value: store.balanceSummary.cashBalance)
                     } else {
                         NavigationLink {
-                            SourceRecordsView(
-                                title: "现金类资产来源",
-                                filterDescription: "\(store.accountMonth) / 现金类资产",
-                                recordIds: store.balanceSummary.cashSourceRecordIds
+                            AssetDetailView(
+                                title: "现金类资产",
+                                amount: store.balanceSummary.cashBalance,
+                                sourceRecordIds: store.balanceSummary.cashSourceRecordIds
                             )
                         } label: {
                             SummaryRow(title: "现金类资产", value: store.balanceSummary.cashBalance)
@@ -531,11 +531,7 @@ struct BalanceView: View {
                                 BalanceItemRow(item: item)
                             } else {
                                 NavigationLink {
-                                    SourceRecordsView(
-                                        title: "\(item.name) 来源",
-                                        filterDescription: "\(store.accountMonth) / \(item.name)",
-                                        recordIds: item.sourceRecordIds
-                                    )
+                                    LiabilityDetailView(item: item)
                                 } label: {
                                     BalanceItemRow(item: item)
                                 }
@@ -559,6 +555,64 @@ struct BalanceView: View {
                 MonthPickerView()
             }
         }
+    }
+}
+
+struct AssetDetailView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let title: String
+    let amount: Decimal
+    let sourceRecordIds: [UUID]
+
+    var body: some View {
+        List {
+            Section("余额") {
+                SummaryRow(title: title, value: amount)
+            }
+
+            Section("来源") {
+                if sourceRecordIds.isEmpty {
+                    ContentUnavailableView("暂无来源流水", systemImage: "tray")
+                } else {
+                    NavigationLink {
+                        SourceRecordsView(
+                            title: "\(title) 来源",
+                            filterDescription: "\(store.accountMonth) / \(title)",
+                            recordIds: sourceRecordIds
+                        )
+                    } label: {
+                        Text("来源流水 \(sourceRecordIds.count) 条")
+                    }
+                }
+            }
+        }
+        .navigationTitle(title)
+    }
+}
+
+struct LiabilityDetailView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let item: BalanceItem
+
+    var body: some View {
+        List {
+            Section("余额") {
+                SummaryRow(title: "剩余负债", value: item.amount)
+            }
+
+            Section("来源") {
+                NavigationLink {
+                    SourceRecordsView(
+                        title: "\(item.name) 来源",
+                        filterDescription: "\(store.accountMonth) / \(item.name)",
+                        recordIds: item.sourceRecordIds
+                    )
+                } label: {
+                    Text("来源流水 \(item.sourceRecordIds.count) 条")
+                }
+            }
+        }
+        .navigationTitle(item.name)
     }
 }
 
@@ -647,11 +701,7 @@ struct StatisticsView: View {
                                 SummaryRow(title: item.typeName, value: item.amount)
                             } else {
                                 NavigationLink {
-                                    SourceRecordsView(
-                                        title: "\(item.typeName) 来源",
-                                        filterDescription: "\(store.accountMonth) / \(item.typeName)",
-                                        recordIds: item.sourceRecordIds
-                                    )
+                                    ExpenseCategoryDetailView(item: item)
                                 } label: {
                                     SummaryRow(title: item.typeName, value: item.amount)
                                 }
@@ -680,6 +730,32 @@ struct StatisticsView: View {
                 MonthPickerView()
             }
         }
+    }
+}
+
+struct ExpenseCategoryDetailView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let item: ExpenseTypeSummary
+
+    var body: some View {
+        List {
+            Section("金额") {
+                SummaryRow(title: item.typeName, value: item.amount)
+            }
+
+            Section("来源") {
+                NavigationLink {
+                    SourceRecordsView(
+                        title: "\(item.typeName) 来源",
+                        filterDescription: "\(store.accountMonth) / \(item.typeName)",
+                        recordIds: item.sourceRecordIds
+                    )
+                } label: {
+                    Text("来源流水 \(item.sourceRecordIds.count) 条")
+                }
+            }
+        }
+        .navigationTitle(item.typeName)
     }
 }
 
