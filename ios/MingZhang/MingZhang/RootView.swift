@@ -42,14 +42,53 @@ struct RootView: View {
     }
 }
 
-struct HomeView: View {
+struct MonthPickerView: View {
     @EnvironmentObject private var store: LedgerStore
-    @State private var isShowingForm = false
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             List {
-                Section("2026-04 摘要") {
+                Section("账月") {
+                    ForEach(store.availableAccountMonths, id: \.self) { month in
+                        Button {
+                            if store.selectAccountMonth(month) {
+                                dismiss()
+                            }
+                        } label: {
+                            HStack {
+                                Text(month)
+                                Spacer()
+                                if month == store.accountMonth {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(.tint)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("选择账月")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct HomeView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @State private var isShowingForm = false
+    @State private var isShowingMonthPicker = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("\(store.accountMonth) 摘要") {
                     SummaryRow(title: "收入", value: store.homeSummary.incomeTotal)
                     SummaryRow(title: "支出", value: store.homeSummary.expenseTotal)
                     SummaryRow(title: "结余", value: store.homeSummary.balance)
@@ -71,6 +110,14 @@ struct HomeView: View {
             }
             .navigationTitle("明账")
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Button {
+                        isShowingMonthPicker = true
+                    } label: {
+                        Label(store.accountMonth, systemImage: "calendar")
+                            .labelStyle(.titleAndIcon)
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         isShowingForm = true
@@ -84,6 +131,9 @@ struct HomeView: View {
                     JournalFormView(mode: .create)
                 }
             }
+            .sheet(isPresented: $isShowingMonthPicker) {
+                MonthPickerView()
+            }
         }
     }
 }
@@ -91,6 +141,7 @@ struct HomeView: View {
 struct JournalView: View {
     @EnvironmentObject private var store: LedgerStore
     @State private var isShowingForm = false
+    @State private var isShowingMonthPicker = false
 
     var body: some View {
         NavigationStack {
@@ -109,6 +160,14 @@ struct JournalView: View {
             }
             .navigationTitle("流水")
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Button {
+                        isShowingMonthPicker = true
+                    } label: {
+                        Label(store.accountMonth, systemImage: "calendar")
+                            .labelStyle(.titleAndIcon)
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         isShowingForm = true
@@ -121,6 +180,9 @@ struct JournalView: View {
                 NavigationStack {
                     JournalFormView(mode: .create)
                 }
+            }
+            .sheet(isPresented: $isShowingMonthPicker) {
+                MonthPickerView()
             }
         }
     }
@@ -248,6 +310,7 @@ struct JournalFormView: View {
 
 struct BalanceView: View {
     @EnvironmentObject private var store: LedgerStore
+    @State private var isShowingMonthPicker = false
 
     var body: some View {
         NavigationStack {
@@ -291,6 +354,19 @@ struct BalanceView: View {
                 }
             }
             .navigationTitle("资产负债")
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Button {
+                        isShowingMonthPicker = true
+                    } label: {
+                        Label(store.accountMonth, systemImage: "calendar")
+                            .labelStyle(.titleAndIcon)
+                    }
+                }
+            }
+            .sheet(isPresented: $isShowingMonthPicker) {
+                MonthPickerView()
+            }
         }
     }
 }
@@ -366,6 +442,7 @@ struct SourceRecordsView: View {
 
 struct StatisticsView: View {
     @EnvironmentObject private var store: LedgerStore
+    @State private var isShowingMonthPicker = false
 
     var body: some View {
         NavigationStack {
@@ -398,6 +475,19 @@ struct StatisticsView: View {
                 }
             }
             .navigationTitle("统计")
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Button {
+                        isShowingMonthPicker = true
+                    } label: {
+                        Label(store.accountMonth, systemImage: "calendar")
+                            .labelStyle(.titleAndIcon)
+                    }
+                }
+            }
+            .sheet(isPresented: $isShowingMonthPicker) {
+                MonthPickerView()
+            }
         }
     }
 }
