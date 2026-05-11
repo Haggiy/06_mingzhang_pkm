@@ -186,6 +186,13 @@ struct JournalView: View {
                             .labelStyle(.titleAndIcon)
                     }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink {
+                        JournalSearchView()
+                    } label: {
+                        Label("搜索", systemImage: "magnifyingglass")
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         isShowingForm = true
@@ -314,6 +321,51 @@ struct JournalFilterView: View {
             return store.details
         }
         return store.details.filter { $0.paymentTypeId == typeId }
+    }
+}
+
+struct JournalSearchView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @State private var keyword = ""
+    @State private var results: [JournalRecord] = []
+
+    var body: some View {
+        List {
+            if keyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                ContentUnavailableView("输入关键词", systemImage: "magnifyingglass")
+            } else if results.isEmpty {
+                ContentUnavailableView("没有找到流水", systemImage: "tray")
+            } else {
+                ForEach(results) { record in
+                    NavigationLink {
+                        JournalFormView(mode: .edit(record))
+                    } label: {
+                        JournalRecordRow(record: record)
+                    }
+                }
+            }
+        }
+        .navigationTitle("搜索")
+        .searchable(text: $keyword, prompt: "金额、账户、分类、备注")
+        .onChange(of: keyword) {
+            search()
+        }
+        .onAppear(perform: search)
+    }
+
+    private func search() {
+        do {
+            let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                results = []
+                return
+            }
+            results = try store.queryRecords(
+                filter: JournalRecordFilter(accountMonths: [store.accountMonth], searchKeyword: trimmed)
+            )
+        } catch {
+            store.lastError = error.localizedDescription
+        }
     }
 }
 
