@@ -178,10 +178,34 @@ public struct JournalRecordChanges: Equatable, Sendable {
 public struct JournalRecordFilter: Equatable, Sendable {
     public var accountMonths: [String]
     public var includeEngineRecords: Bool
+    public var paymentMethodNames: [String]
+    public var paymentTypeNames: [String]
+    public var paymentDetailNames: [String]
+    public var amountMin: Decimal?
+    public var amountMax: Decimal?
+    public var noteKeyword: String?
+    public var searchKeyword: String?
 
-    public init(accountMonths: [String], includeEngineRecords: Bool = false) {
+    public init(
+        accountMonths: [String],
+        includeEngineRecords: Bool = false,
+        paymentMethodNames: [String] = [],
+        paymentTypeNames: [String] = [],
+        paymentDetailNames: [String] = [],
+        amountMin: Decimal? = nil,
+        amountMax: Decimal? = nil,
+        noteKeyword: String? = nil,
+        searchKeyword: String? = nil
+    ) {
         self.accountMonths = accountMonths
         self.includeEngineRecords = includeEngineRecords
+        self.paymentMethodNames = paymentMethodNames
+        self.paymentTypeNames = paymentTypeNames
+        self.paymentDetailNames = paymentDetailNames
+        self.amountMin = amountMin
+        self.amountMax = amountMax
+        self.noteKeyword = noteKeyword
+        self.searchKeyword = searchKeyword
     }
 }
 
@@ -515,13 +539,54 @@ public final class LedgerUseCases: @unchecked Sendable {
     }
 
     public func queryJournalRecords(filter: JournalRecordFilter) throws -> [JournalRecord] {
-        try database.writer.read { db in
+        guard !filter.accountMonths.isEmpty else { return [] }
+
+        return try database.writer.read { db in
             var sql = selectJournalRecordSQL + " WHERE journal_records.account_month IN \(sqlPlaceholders(filter.accountMonths.count))"
             var arguments = StatementArguments(filter.accountMonths)
+
             if !filter.includeEngineRecords {
                 sql += " AND journal_records.record_source != ?"
                 arguments += [RecordSource.engine.rawValue]
             }
+            if !filter.paymentMethodNames.isEmpty {
+                sql += " AND payment_methods.name IN \(sqlPlaceholders(filter.paymentMethodNames.count))"
+                arguments += StatementArguments(filter.paymentMethodNames)
+            }
+            if !filter.paymentTypeNames.isEmpty {
+                sql += " AND payment_types.name IN \(sqlPlaceholders(filter.paymentTypeNames.count))"
+                arguments += StatementArguments(filter.paymentTypeNames)
+            }
+            if !filter.paymentDetailNames.isEmpty {
+                sql += " AND payment_details.name IN \(sqlPlaceholders(filter.paymentDetailNames.count))"
+                arguments += StatementArguments(filter.paymentDetailNames)
+            }
+            if let amountMin = filter.amountMin {
+                sql += " AND CAST(journal_records.amount AS REAL) >= CAST(? AS REAL)"
+                arguments += [encodeDecimal(amountMin)]
+            }
+            if let amountMax = filter.amountMax {
+                sql += " AND CAST(journal_records.amount AS REAL) <= CAST(? AS REAL)"
+                arguments += [encodeDecimal(amountMax)]
+            }
+            if let noteKeyword = filter.noteKeyword?.trimmingCharacters(in: .whitespacesAndNewlines), !noteKeyword.isEmpty {
+                sql += " AND journal_records.note LIKE ?"
+                arguments += ["%\(noteKeyword)%"]
+            }
+            if let keyword = filter.searchKeyword?.trimmingCharacters(in: .whitespacesAndNewlines), !keyword.isEmpty {
+                let pattern = "%\(keyword)%"
+                sql += """
+                 AND (
+                    journal_records.amount LIKE ?
+                    OR payment_methods.name LIKE ?
+                    OR payment_types.name LIKE ?
+                    OR payment_details.name LIKE ?
+                    OR journal_records.note LIKE ?
+                 )
+                """
+                arguments += [pattern, pattern, pattern, pattern, pattern]
+            }
+
             sql += " ORDER BY journal_records.occurred_at ASC, journal_records.created_at ASC"
             return try Row.fetchAll(db, sql: sql, arguments: arguments).map(journalRecord(from:))
         }

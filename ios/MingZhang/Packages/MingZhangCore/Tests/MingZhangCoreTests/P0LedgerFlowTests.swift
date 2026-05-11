@@ -34,6 +34,77 @@ final class P0LedgerFlowTests: XCTestCase {
         XCTAssertEqual(try useCases.queryAccountMonths(), ["2026-04", "2026-03"])
     }
 
+    func testQueryJournalRecordsSupportsVisibleFieldFilters() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let lunch = try useCases.createManualRecord(input: sampleInput(amount: Decimal(100)))
+        _ = try useCases.createManualRecord(
+            input: CreateManualRecordInput(
+                accountMonth: "2026-04",
+                occurredAt: try Date.iso8601("2026-04-16T08:00:00Z"),
+                paymentMethodName: "电子钱包余额",
+                amount: Decimal(20),
+                paymentTypeName: "生活必要开支",
+                paymentDetailName: "伙食费",
+                note: "早餐"
+            )
+        )
+
+        let records = try useCases.queryJournalRecords(
+            filter: JournalRecordFilter(
+                accountMonths: ["2026-04"],
+                paymentMethodNames: ["广发卡"],
+                paymentTypeNames: ["生活必要开支"],
+                paymentDetailNames: ["伙食费"],
+                amountMin: Decimal(80),
+                amountMax: Decimal(120),
+                noteKeyword: "午餐"
+            )
+        )
+
+        XCTAssertEqual(records.map(\.id), [lunch.id])
+    }
+
+    func testQueryJournalRecordsSupportsKeywordSearch() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let lunch = try useCases.createManualRecord(input: sampleInput(amount: Decimal(100)))
+        _ = try useCases.createManualRecord(
+            input: CreateManualRecordInput(
+                accountMonth: "2026-04",
+                occurredAt: try Date.iso8601("2026-04-16T08:00:00Z"),
+                paymentMethodName: "电子钱包余额",
+                amount: Decimal(20),
+                paymentTypeName: "生活必要开支",
+                paymentDetailName: "伙食费",
+                note: "早餐"
+            )
+        )
+
+        XCTAssertEqual(
+            try useCases.queryJournalRecords(
+                filter: JournalRecordFilter(accountMonths: ["2026-04"], searchKeyword: "广发")
+            ).map(\.id),
+            [lunch.id]
+        )
+        XCTAssertEqual(
+            try useCases.queryJournalRecords(
+                filter: JournalRecordFilter(accountMonths: ["2026-04"], searchKeyword: "午餐")
+            ).map(\.id),
+            [lunch.id]
+        )
+        XCTAssertEqual(
+            try useCases.queryJournalRecords(
+                filter: JournalRecordFilter(accountMonths: ["2026-04"], searchKeyword: "100")
+            ).map(\.id),
+            [lunch.id]
+        )
+    }
+
     func testCreditCardExpenseCreatesLiabilityAndRecalculates() throws {
         let database = try LedgerDatabase.inMemory()
         let useCases = LedgerUseCases(database: database)
