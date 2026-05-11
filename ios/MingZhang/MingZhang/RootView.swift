@@ -197,13 +197,13 @@ struct JournalFormView: View {
                 }
             }
         }
-        .alert("确认删除记录？", isPresented: $isShowingDeleteConfirmation) {
-            Button("取消", role: .cancel) {}
-            Button("删除", role: .destructive) {
+        .confirmationDialog("确认删除记录？", isPresented: $isShowingDeleteConfirmation, titleVisibility: .visible) {
+            Button("删除记录", role: .destructive) {
                 if case .edit(let record) = mode, store.deleteRecord(id: record.id) {
                     dismiss()
                 }
             }
+            Button("取消", role: .cancel) {}
         } message: {
             Text("删除后会重新计算当前账月结果。")
         }
@@ -314,6 +314,7 @@ struct SourceRecordsView: View {
     let filterDescription: String
     let recordIds: [UUID]
     @State private var records: [JournalRecord] = []
+    @State private var selectedRecordId: UUID?
 
     var body: some View {
         List {
@@ -327,16 +328,30 @@ struct SourceRecordsView: View {
                     ContentUnavailableView("暂无来源流水", systemImage: "tray")
                 } else {
                     ForEach(records) { record in
-                        NavigationLink {
-                            JournalFormView(mode: .edit(record))
+                        Button {
+                            selectedRecordId = record.id
                         } label: {
-                            JournalRecordRow(record: record)
+                            HStack(spacing: 12) {
+                                JournalRecordRow(record: record)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
         }
         .navigationTitle(title)
+        .navigationDestination(item: $selectedRecordId) { recordId in
+            if let record = records.first(where: { $0.id == recordId }) {
+                JournalFormView(mode: .edit(record))
+            } else {
+                ContentUnavailableView("找不到来源流水", systemImage: "tray")
+            }
+        }
         .onAppear(perform: loadRecords)
     }
 
