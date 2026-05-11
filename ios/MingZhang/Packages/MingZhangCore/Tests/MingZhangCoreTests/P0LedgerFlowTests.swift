@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import XCTest
 @testable import MingZhangCore
 
@@ -122,18 +123,122 @@ final class P0LedgerFlowTests: XCTestCase {
         XCTAssertEqual(engineRecords.first?.sourceRecordIds, [record.id])
     }
 
-    private func sampleInput(amount: Decimal) throws -> CreateManualRecordInput {
+    func testValidationRejectsInvalidManualRecordInputs() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        XCTAssertThrowsError(try useCases.createManualRecord(
+            input: try sampleInput(accountMonth: "2026-13", amount: Decimal(100))
+        )) { error in
+            XCTAssertEqual(error as? MingZhangError, .validation("账月必须是合法的 YYYY-MM"))
+        }
+
+        XCTAssertThrowsError(try useCases.createManualRecord(
+            input: try sampleInput(amount: Decimal(0))
+        )) { error in
+            XCTAssertEqual(error as? MingZhangError, .validation("金额不能为 0"))
+        }
+
+        let record = try useCases.createManualRecord(input: sampleInput(amount: Decimal(100)))
+        try insertPaymentTypeAndDetail(database, typeName: "交通费", detailName: "公交")
+
+        XCTAssertThrowsError(try useCases.updateJournalRecord(
+            id: record.id,
+            changes: JournalRecordChanges(paymentTypeName: "交通费")
+        )) { error in
+            XCTAssertEqual(error as? MingZhangError, .validation("类型明细必须归属于当前收付类型"))
+        }
+    }
+
+    func testEngineAndInvestmentFeedRecordsAreNotEditableOrDeletable() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let record = try useCases.createManualRecord(input: sampleInput(amount: Decimal(100)))
+        let engineRecord = try XCTUnwrap(try useCases.queryJournalRecords(
+            filter: JournalRecordFilter(accountMonths: ["2026-04"], includeEngineRecords: true)
+        ).first { $0.recordSource == .engine })
+
+        XCTAssertThrowsError(try useCases.updateJournalRecord(
+            id: engineRecord.id,
+            changes: JournalRecordChanges(amount: Decimal(120))
+        )) { error in
+            XCTAssertEqual(error as? MingZhangError, .recordNotEditable(engineRecord.id))
+        }
+        XCTAssertThrowsError(try useCases.deleteJournalRecord(id: engineRecord.id)) { error in
+            XCTAssertEqual(error as? MingZhangError, .recordNotEditable(engineRecord.id))
+        }
+
+        try database.writer.write { db in
+            try db.execute(
+                sql: "UPDATE journal_records SET record_source = ? WHERE id = ?",
+                arguments: [RecordSource.investmentFeed.rawValue, record.id.uuidString]
+            )
+        }
+
+        XCTAssertThrowsError(try useCases.updateJournalRecord(
+            id: record.id,
+            changes: JournalRecordChanges(amount: Decimal(120))
+        )) { error in
+            XCTAssertEqual(error as? MingZhangError, .recordNotEditable(record.id))
+        }
+        XCTAssertThrowsError(try useCases.deleteJournalRecord(id: record.id)) { error in
+            XCTAssertEqual(error as? MingZhangError, .recordNotEditable(record.id))
+        }
+    }
+
+    private func sampleInput(
+        accountMonth: String = "2026-04",
+        paymentMethodName: String = "广发卡",
+        amount: Decimal
+    ) throws -> CreateManualRecordInput {
         let occurredAt = try Date.iso8601("2026-04-15T12:30:00Z")
 
         return CreateManualRecordInput(
-            accountMonth: "2026-04",
+            accountMonth: accountMonth,
             occurredAt: occurredAt,
-            paymentMethodName: "广发卡",
+            paymentMethodName: paymentMethodName,
             amount: amount,
             paymentTypeName: "生活必要开支",
             paymentDetailName: "伙食费",
             note: "午餐"
         )
+    }
+
+    private func insertPaymentTypeAndDetail(
+        _ database: LedgerDatabase,
+        typeName: String,
+        detailName: String
+    ) throws {
+        let typeId = UUID()
+        let detailId = UUID()
+        let now = "2026-04-15T12:30:00Z"
+        try database.writer.write { db in
+            try db.execute(sql: """
+                INSERT INTO payment_types (id, name, element, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                    typeId.uuidString,
+                    typeName,
+                    AccountingElement.expense.rawValue,
+                    true,
+                    now,
+                    now
+                ])
+            try db.execute(sql: """
+                INSERT INTO payment_details (id, name, payment_type_id, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                    detailId.uuidString,
+                    detailName,
+                    typeId.uuidString,
+                    true,
+                    now,
+                    now
+                ])
+        }
     }
 }
 

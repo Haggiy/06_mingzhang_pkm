@@ -136,6 +136,7 @@ struct JournalFormView: View {
     @Environment(\.dismiss) private var dismiss
     let mode: Mode
     @State private var input: JournalFormInput
+    @State private var isShowingDeleteConfirmation = false
 
     init(mode: Mode) {
         self.mode = mode
@@ -173,11 +174,10 @@ struct JournalFormView: View {
                 TextField("备注", text: $input.note, axis: .vertical)
             }
 
-            if case .edit(let record) = mode {
+            if case .edit = mode {
                 Section {
                     Button("删除记录", role: .destructive) {
-                        store.deleteRecord(id: record.id)
-                        dismiss()
+                        isShowingDeleteConfirmation = true
                     }
                 }
             }
@@ -191,10 +191,21 @@ struct JournalFormView: View {
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("保存") {
-                    save()
+                    if save() {
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .alert("确认删除记录？", isPresented: $isShowingDeleteConfirmation) {
+            Button("取消", role: .cancel) {}
+            Button("删除", role: .destructive) {
+                if case .edit(let record) = mode, store.deleteRecord(id: record.id) {
                     dismiss()
                 }
             }
+        } message: {
+            Text("删除后会重新计算当前账月结果。")
         }
     }
 
@@ -207,12 +218,12 @@ struct JournalFormView: View {
         }
     }
 
-    private func save() {
+    private func save() -> Bool {
         switch mode {
         case .create:
-            store.createRecord(input: input)
+            return store.createRecord(input: input)
         case .edit(let record):
-            store.updateRecord(id: record.id, input: input)
+            return store.updateRecord(id: record.id, input: input)
         }
     }
 }
@@ -257,8 +268,8 @@ struct StatisticsView: View {
                     if store.statisticsSummary.expenseByType.isEmpty {
                         ContentUnavailableView("暂无支出", systemImage: "chart.bar")
                     } else {
-                        ForEach(store.statisticsSummary.expenseByType.keys.sorted(), id: \.self) { key in
-                            SummaryRow(title: key, value: store.statisticsSummary.expenseByType[key] ?? 0)
+                        ForEach(store.statisticsSummary.expenseByType, id: \.typeName) { item in
+                            SummaryRow(title: item.typeName, value: item.amount)
                         }
                     }
                 }

@@ -11,7 +11,7 @@ final class LedgerStore: ObservableObject {
     @Published private(set) var details: [PaymentDetail] = []
     @Published private(set) var homeSummary = HomeSummary(incomeTotal: 0, expenseTotal: 0, balance: 0, recentRecordIds: [])
     @Published private(set) var balanceSummary = BalanceSummary(cashBalance: 0, liabilityItems: [])
-    @Published private(set) var statisticsSummary = StatisticsSummary(expenseByType: [:], sourceRecordIds: [])
+    @Published private(set) var statisticsSummary = StatisticsSummary(expenseByType: [], sourceRecordIds: [])
     @Published var lastError: String?
 
     private var useCases: LedgerUseCases?
@@ -41,44 +41,42 @@ final class LedgerStore: ObservableObject {
         lastError = nil
     }
 
-    func createRecord(input: JournalFormInput) {
+    func createRecord(input: JournalFormInput) -> Bool {
         do {
-            guard let useCases else { return }
-            _ = try useCases.createManualRecord(input: input.toCreateInput())
+            guard let useCases else { return false }
+            _ = try useCases.createManualRecord(input: try input.toCreateInput())
             try refresh()
+            return true
         } catch {
             lastError = error.localizedDescription
+            return false
         }
     }
 
-    func updateRecord(id: UUID, input: JournalFormInput) {
+    func updateRecord(id: UUID, input: JournalFormInput) -> Bool {
         do {
-            guard let useCases else { return }
+            guard let useCases else { return false }
             _ = try useCases.updateJournalRecord(
                 id: id,
-                changes: JournalRecordChanges(
-                    accountMonth: input.accountMonth,
-                    occurredAt: input.occurredAt,
-                    paymentMethodName: input.paymentMethodName,
-                    amount: input.amount,
-                    paymentTypeName: input.paymentTypeName,
-                    paymentDetailName: input.paymentDetailName,
-                    note: input.note
-                )
+                changes: try input.toChanges()
             )
             try refresh()
+            return true
         } catch {
             lastError = error.localizedDescription
+            return false
         }
     }
 
-    func deleteRecord(id: UUID) {
+    func deleteRecord(id: UUID) -> Bool {
         do {
-            guard let useCases else { return }
+            guard let useCases else { return false }
             try useCases.deleteJournalRecord(id: id)
             try refresh()
+            return true
         } catch {
             lastError = error.localizedDescription
+            return false
         }
     }
 
@@ -102,20 +100,59 @@ struct JournalFormInput: Equatable {
     var paymentDetailName: String
     var note: String
 
-    var amount: Decimal {
-        Decimal(string: amountText, locale: Locale(identifier: "en_US_POSIX")) ?? 0
+    func parsedAmount() throws -> Decimal {
+        let trimmed = amountText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw MingZhangError.validation("金额不能为空")
+        }
+        guard let amount = Decimal(string: trimmed, locale: Locale(identifier: "en_US_POSIX")) else {
+            throw MingZhangError.validation("金额必须是有效数字")
+        }
+        guard amount != Decimal(0) else {
+            throw MingZhangError.validation("金额不能为 0")
+        }
+        return amount
     }
 
-    func toCreateInput() -> CreateManualRecordInput {
-        CreateManualRecordInput(
+    func toCreateInput() throws -> CreateManualRecordInput {
+        try validateRequiredFields()
+        return CreateManualRecordInput(
             accountMonth: accountMonth,
             occurredAt: occurredAt,
             paymentMethodName: paymentMethodName,
-            amount: amount,
+            amount: try parsedAmount(),
             paymentTypeName: paymentTypeName,
             paymentDetailName: paymentDetailName,
             note: note.isEmpty ? nil : note
         )
+    }
+
+    func toChanges() throws -> JournalRecordChanges {
+        try validateRequiredFields()
+        return JournalRecordChanges(
+            accountMonth: accountMonth,
+            occurredAt: occurredAt,
+            paymentMethodName: paymentMethodName,
+            amount: try parsedAmount(),
+            paymentTypeName: paymentTypeName,
+            paymentDetailName: paymentDetailName,
+            note: note
+        )
+    }
+
+    private func validateRequiredFields() throws {
+        if accountMonth.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw MingZhangError.validation("账月不能为空")
+        }
+        if paymentMethodName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw MingZhangError.validation("收付手段不能为空")
+        }
+        if paymentTypeName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw MingZhangError.validation("收付类型不能为空")
+        }
+        if paymentDetailName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw MingZhangError.validation("类型明细不能为空")
+        }
     }
 
     static func p0Default(now: Date = Date()) -> JournalFormInput {

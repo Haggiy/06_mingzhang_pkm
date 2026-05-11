@@ -1,11 +1,27 @@
 import Foundation
 import GRDB
 
-public enum MingZhangError: Error, Equatable {
+public enum MingZhangError: Error, Equatable, LocalizedError {
     case missingSeed(String)
     case recordNotFound(UUID)
     case recordNotEditable(UUID)
     case invalidDate(String)
+    case validation(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .missingSeed(let value):
+            "缺少默认配置：\(value)"
+        case .recordNotFound(let id):
+            "找不到流水记录：\(id.uuidString)"
+        case .recordNotEditable:
+            "这条记录由系统生成或回填，不能直接编辑或删除"
+        case .invalidDate(let value):
+            "日期格式无效：\(value)"
+        case .validation(let message):
+            message
+        }
+    }
 }
 
 public enum PaymentMethodType: String, Codable, Equatable, Sendable {
@@ -381,6 +397,12 @@ public final class LedgerUseCases: @unchecked Sendable {
             let method = try requirePaymentMethod(db, name: input.paymentMethodName)
             let type = try requirePaymentType(db, name: input.paymentTypeName)
             let detail = try requirePaymentDetail(db, name: input.paymentDetailName, paymentTypeId: type.id)
+            try validateRecordFields(
+                accountMonth: input.accountMonth,
+                amount: input.amount,
+                paymentType: type,
+                paymentDetail: detail
+            )
             let now = Date()
             let record = JournalRecord(
                 id: UUID(),
@@ -448,6 +470,14 @@ public final class LedgerUseCases: @unchecked Sendable {
             if let note = changes.note {
                 record.note = note
             }
+            let finalType = try requirePaymentType(db, id: record.paymentTypeId)
+            let finalDetail = try requirePaymentDetail(db, id: record.paymentDetailId)
+            try validateRecordFields(
+                accountMonth: record.accountMonth,
+                amount: record.amount,
+                paymentType: finalType,
+                paymentDetail: finalDetail
+            )
             record.updatedAt = Date()
             try persistJournalRecordUpdate(db, record: record)
             return (record: record, originalMonth: originalMonth)
@@ -955,6 +985,37 @@ private func requireJournalRecord(_ db: Database, id: UUID) throws -> JournalRec
         throw MingZhangError.recordNotFound(id)
     }
     return try journalRecord(from: row)
+}
+
+private func validateRecordFields(
+    accountMonth: String,
+    amount: Decimal,
+    paymentType: PaymentType,
+    paymentDetail: PaymentDetail
+) throws {
+    try validateAccountMonth(accountMonth)
+    guard amount != Decimal(0) else {
+        throw MingZhangError.validation("金额不能为 0")
+    }
+    guard paymentDetail.paymentTypeId == paymentType.id else {
+        throw MingZhangError.validation("类型明细必须归属于当前收付类型")
+    }
+}
+
+private func validateAccountMonth(_ accountMonth: String) throws {
+    let parts = accountMonth.split(separator: "-", omittingEmptySubsequences: false)
+    guard
+        accountMonth.count == 7,
+        parts.count == 2,
+        parts[0].count == 4,
+        parts[1].count == 2,
+        let year = Int(parts[0]),
+        let month = Int(parts[1]),
+        year > 0,
+        (1...12).contains(month)
+    else {
+        throw MingZhangError.validation("账月必须是合法的 YYYY-MM")
+    }
 }
 
 private func paymentMethod(from row: Row) throws -> PaymentMethod {
