@@ -417,7 +417,7 @@ struct JournalFormView: View {
                     TextField("备注", text: $input.note, axis: .vertical)
                 }
 
-            if case .edit = mode {
+            if case .edit = mode, isEditableRecord {
                 Section {
                     Button("删除记录", role: .destructive) {
                         isShowingDeleteConfirmation = true
@@ -438,6 +438,7 @@ struct JournalFormView: View {
                         dismiss()
                     }
                 }
+                .disabled(!isEditableRecord)
             }
         }
         .confirmationDialog("确认删除记录？", isPresented: $isShowingDeleteConfirmation, titleVisibility: .visible) {
@@ -464,6 +465,15 @@ struct JournalFormView: View {
             "记一笔"
         case .edit:
             "记录详情"
+        }
+    }
+
+    private var isEditableRecord: Bool {
+        switch mode {
+        case .create:
+            return true
+        case .edit(let record):
+            return record.recordSource == .manual || record.recordSource == .import
         }
     }
 
@@ -709,6 +719,9 @@ struct JournalRecordRow: View {
             }
             Text("\(record.paymentTypeName) / \(record.paymentDetailName)")
                 .foregroundStyle(.secondary)
+            Text(record.recordSource.displayName)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             if let note = record.note, !note.isEmpty {
                 Text(note)
                     .font(.caption)
@@ -737,5 +750,20 @@ private extension Decimal {
     var mingZhangAmountText: String {
         let number = NSDecimalNumber(decimal: self)
         return number.stringValue
+    }
+}
+
+private extension RecordSource {
+    var displayName: String {
+        switch self {
+        case .manual:
+            return "手工"
+        case .import:
+            return "导入"
+        case .investmentFeed:
+            return "投资回填"
+        case .engine:
+            return "引擎"
+        }
     }
 }
