@@ -1,2 +1,8 @@
 .DS_Store
 tmp/
+.build/
+DerivedData/
+SourcePackages/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
