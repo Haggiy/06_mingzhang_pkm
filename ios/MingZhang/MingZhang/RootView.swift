@@ -42,14 +42,53 @@ struct RootView: View {
     }
 }
 
-struct HomeView: View {
+struct MonthPickerView: View {
     @EnvironmentObject private var store: LedgerStore
-    @State private var isShowingForm = false
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             List {
-                Section("2026-04 摘要") {
+                Section("账月") {
+                    ForEach(store.availableAccountMonths, id: \.self) { month in
+                        Button {
+                            if store.selectAccountMonth(month) {
+                                dismiss()
+                            }
+                        } label: {
+                            HStack {
+                                Text(month)
+                                Spacer()
+                                if month == store.accountMonth {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(.tint)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("选择账月")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct HomeView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @State private var isShowingForm = false
+    @State private var isShowingMonthPicker = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("\(store.accountMonth) 摘要") {
                     SummaryRow(title: "收入", value: store.homeSummary.incomeTotal)
                     SummaryRow(title: "支出", value: store.homeSummary.expenseTotal)
                     SummaryRow(title: "结余", value: store.homeSummary.balance)
@@ -71,6 +110,14 @@ struct HomeView: View {
             }
             .navigationTitle("明账")
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Button {
+                        isShowingMonthPicker = true
+                    } label: {
+                        Label(store.accountMonth, systemImage: "calendar")
+                            .labelStyle(.titleAndIcon)
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         isShowingForm = true
@@ -84,6 +131,9 @@ struct HomeView: View {
                     JournalFormView(mode: .create)
                 }
             }
+            .sheet(isPresented: $isShowingMonthPicker) {
+                MonthPickerView()
+            }
         }
     }
 }
@@ -91,10 +141,22 @@ struct HomeView: View {
 struct JournalView: View {
     @EnvironmentObject private var store: LedgerStore
     @State private var isShowingForm = false
+    @State private var isShowingMonthPicker = false
+    @State private var isShowingFilter = false
 
     var body: some View {
         NavigationStack {
             List {
+                if store.journalFilter != JournalRecordFilter(accountMonths: [store.accountMonth]) {
+                    Section("当前筛选") {
+                        Button {
+                            _ = store.clearJournalFilter()
+                        } label: {
+                            Label("清除筛选", systemImage: "xmark.circle")
+                        }
+                    }
+                }
+
                 if store.records.isEmpty {
                     ContentUnavailableView("当前账月暂无流水", systemImage: "tray")
                 } else {
@@ -109,6 +171,28 @@ struct JournalView: View {
             }
             .navigationTitle("流水")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        isShowingFilter = true
+                    } label: {
+                        Label("筛选", systemImage: "line.3.horizontal.decrease.circle")
+                    }
+                }
+                ToolbarItem(placement: .principal) {
+                    Button {
+                        isShowingMonthPicker = true
+                    } label: {
+                        Label(store.accountMonth, systemImage: "calendar")
+                            .labelStyle(.titleAndIcon)
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink {
+                        JournalSearchView()
+                    } label: {
+                        Label("搜索", systemImage: "magnifyingglass")
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         isShowingForm = true
@@ -122,6 +206,165 @@ struct JournalView: View {
                     JournalFormView(mode: .create)
                 }
             }
+            .sheet(isPresented: $isShowingMonthPicker) {
+                MonthPickerView()
+            }
+            .sheet(isPresented: $isShowingFilter) {
+                JournalFilterView()
+            }
+        }
+    }
+}
+
+struct JournalFilterInput: Equatable {
+    var paymentMethodName = ""
+    var paymentTypeName = ""
+    var paymentDetailName = ""
+    var amountMinText = ""
+    var amountMaxText = ""
+    var noteKeyword = ""
+
+    func toFilter(accountMonth: String) throws -> JournalRecordFilter {
+        JournalRecordFilter(
+            accountMonths: [accountMonth],
+            paymentMethodNames: paymentMethodName.isEmpty ? [] : [paymentMethodName],
+            paymentTypeNames: paymentTypeName.isEmpty ? [] : [paymentTypeName],
+            paymentDetailNames: paymentDetailName.isEmpty ? [] : [paymentDetailName],
+            amountMin: try parseOptionalDecimal(amountMinText, fieldName: "最小金额"),
+            amountMax: try parseOptionalDecimal(amountMaxText, fieldName: "最大金额"),
+            noteKeyword: noteKeyword.isEmpty ? nil : noteKeyword
+        )
+    }
+
+    private func parseOptionalDecimal(_ value: String, fieldName: String) throws -> Decimal? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let amount = Decimal(string: trimmed, locale: Locale(identifier: "en_US_POSIX")) else {
+            throw MingZhangError.validation("\(fieldName)必须是有效数字")
+        }
+        return amount
+    }
+}
+
+struct JournalFilterView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var input = JournalFilterInput()
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("条件") {
+                    Picker("收付手段", selection: $input.paymentMethodName) {
+                        Text("全部").tag("")
+                        ForEach(store.methods) { method in
+                            Text(method.name).tag(method.name)
+                        }
+                    }
+                    Picker("收付类型", selection: $input.paymentTypeName) {
+                        Text("全部").tag("")
+                        ForEach(store.types) { type in
+                            Text(type.name).tag(type.name)
+                        }
+                    }
+                    Picker("类型明细", selection: $input.paymentDetailName) {
+                        Text("全部").tag("")
+                        ForEach(filteredDetails) { detail in
+                            Text(detail.name).tag(detail.name)
+                        }
+                    }
+                    TextField("最小金额", text: $input.amountMinText)
+                        .keyboardType(.decimalPad)
+                    TextField("最大金额", text: $input.amountMaxText)
+                        .keyboardType(.decimalPad)
+                    TextField("备注关键词", text: $input.noteKeyword)
+                }
+
+                Section {
+                    Button("重置") {
+                        input = JournalFilterInput()
+                        if store.clearJournalFilter() {
+                            dismiss()
+                        }
+                    }
+                }
+            }
+            .navigationTitle("筛选")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("应用") {
+                        do {
+                            if store.applyJournalFilter(try input.toFilter(accountMonth: store.accountMonth)) {
+                                dismiss()
+                            }
+                        } catch {
+                            store.lastError = error.localizedDescription
+                        }
+                    }
+                }
+            }
+            .onChange(of: input.paymentTypeName) {
+                if !filteredDetails.contains(where: { $0.name == input.paymentDetailName }) {
+                    input.paymentDetailName = ""
+                }
+            }
+        }
+    }
+
+    private var filteredDetails: [PaymentDetail] {
+        guard let typeId = store.types.first(where: { $0.name == input.paymentTypeName })?.id else {
+            return store.details
+        }
+        return store.details.filter { $0.paymentTypeId == typeId }
+    }
+}
+
+struct JournalSearchView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @State private var keyword = ""
+    @State private var results: [JournalRecord] = []
+
+    var body: some View {
+        List {
+            if keyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                ContentUnavailableView("输入关键词", systemImage: "magnifyingglass")
+            } else if results.isEmpty {
+                ContentUnavailableView("没有找到流水", systemImage: "tray")
+            } else {
+                ForEach(results) { record in
+                    NavigationLink {
+                        JournalFormView(mode: .edit(record))
+                    } label: {
+                        JournalRecordRow(record: record)
+                    }
+                }
+            }
+        }
+        .navigationTitle("搜索")
+        .searchable(text: $keyword, prompt: "金额、账户、分类、备注")
+        .onChange(of: keyword) {
+            search()
+        }
+        .onAppear(perform: search)
+    }
+
+    private func search() {
+        do {
+            let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                results = []
+                return
+            }
+            results = try store.queryRecords(
+                filter: JournalRecordFilter(accountMonths: [store.accountMonth], searchKeyword: trimmed)
+            )
+        } catch {
+            store.lastError = error.localizedDescription
         }
     }
 }
@@ -174,7 +417,7 @@ struct JournalFormView: View {
                     TextField("备注", text: $input.note, axis: .vertical)
                 }
 
-            if case .edit = mode {
+            if case .edit = mode, isEditableRecord {
                 Section {
                     Button("删除记录", role: .destructive) {
                         isShowingDeleteConfirmation = true
@@ -195,6 +438,7 @@ struct JournalFormView: View {
                         dismiss()
                     }
                 }
+                .disabled(!isEditableRecord)
             }
         }
         .confirmationDialog("确认删除记录？", isPresented: $isShowingDeleteConfirmation, titleVisibility: .visible) {
@@ -224,6 +468,15 @@ struct JournalFormView: View {
         }
     }
 
+    private var isEditableRecord: Bool {
+        switch mode {
+        case .create:
+            return true
+        case .edit(let record):
+            return record.recordSource == .manual || record.recordSource == .import
+        }
+    }
+
     private func save() -> Bool {
         switch mode {
         case .create:
@@ -248,6 +501,7 @@ struct JournalFormView: View {
 
 struct BalanceView: View {
     @EnvironmentObject private var store: LedgerStore
+    @State private var isShowingMonthPicker = false
 
     var body: some View {
         NavigationStack {
@@ -257,10 +511,10 @@ struct BalanceView: View {
                         SummaryRow(title: "现金类资产", value: store.balanceSummary.cashBalance)
                     } else {
                         NavigationLink {
-                            SourceRecordsView(
-                                title: "现金类资产来源",
-                                filterDescription: "\(store.accountMonth) / 现金类资产",
-                                recordIds: store.balanceSummary.cashSourceRecordIds
+                            AssetDetailView(
+                                title: "现金类资产",
+                                amount: store.balanceSummary.cashBalance,
+                                sourceRecordIds: store.balanceSummary.cashSourceRecordIds
                             )
                         } label: {
                             SummaryRow(title: "现金类资产", value: store.balanceSummary.cashBalance)
@@ -277,11 +531,7 @@ struct BalanceView: View {
                                 BalanceItemRow(item: item)
                             } else {
                                 NavigationLink {
-                                    SourceRecordsView(
-                                        title: "\(item.name) 来源",
-                                        filterDescription: "\(store.accountMonth) / \(item.name)",
-                                        recordIds: item.sourceRecordIds
-                                    )
+                                    LiabilityDetailView(item: item)
                                 } label: {
                                     BalanceItemRow(item: item)
                                 }
@@ -291,7 +541,78 @@ struct BalanceView: View {
                 }
             }
             .navigationTitle("资产负债")
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Button {
+                        isShowingMonthPicker = true
+                    } label: {
+                        Label(store.accountMonth, systemImage: "calendar")
+                            .labelStyle(.titleAndIcon)
+                    }
+                }
+            }
+            .sheet(isPresented: $isShowingMonthPicker) {
+                MonthPickerView()
+            }
         }
+    }
+}
+
+struct AssetDetailView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let title: String
+    let amount: Decimal
+    let sourceRecordIds: [UUID]
+
+    var body: some View {
+        List {
+            Section("余额") {
+                SummaryRow(title: title, value: amount)
+            }
+
+            Section("来源") {
+                if sourceRecordIds.isEmpty {
+                    ContentUnavailableView("暂无来源流水", systemImage: "tray")
+                } else {
+                    NavigationLink {
+                        SourceRecordsView(
+                            title: "\(title) 来源",
+                            filterDescription: "\(store.accountMonth) / \(title)",
+                            recordIds: sourceRecordIds
+                        )
+                    } label: {
+                        Text("来源流水 \(sourceRecordIds.count) 条")
+                    }
+                }
+            }
+        }
+        .navigationTitle(title)
+    }
+}
+
+struct LiabilityDetailView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let item: BalanceItem
+
+    var body: some View {
+        List {
+            Section("余额") {
+                SummaryRow(title: "剩余负债", value: item.amount)
+            }
+
+            Section("来源") {
+                NavigationLink {
+                    SourceRecordsView(
+                        title: "\(item.name) 来源",
+                        filterDescription: "\(store.accountMonth) / \(item.name)",
+                        recordIds: item.sourceRecordIds
+                    )
+                } label: {
+                    Text("来源流水 \(item.sourceRecordIds.count) 条")
+                }
+            }
+        }
+        .navigationTitle(item.name)
     }
 }
 
@@ -366,6 +687,7 @@ struct SourceRecordsView: View {
 
 struct StatisticsView: View {
     @EnvironmentObject private var store: LedgerStore
+    @State private var isShowingMonthPicker = false
 
     var body: some View {
         NavigationStack {
@@ -379,11 +701,7 @@ struct StatisticsView: View {
                                 SummaryRow(title: item.typeName, value: item.amount)
                             } else {
                                 NavigationLink {
-                                    SourceRecordsView(
-                                        title: "\(item.typeName) 来源",
-                                        filterDescription: "\(store.accountMonth) / \(item.typeName)",
-                                        recordIds: item.sourceRecordIds
-                                    )
+                                    ExpenseCategoryDetailView(item: item)
                                 } label: {
                                     SummaryRow(title: item.typeName, value: item.amount)
                                 }
@@ -398,7 +716,46 @@ struct StatisticsView: View {
                 }
             }
             .navigationTitle("统计")
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Button {
+                        isShowingMonthPicker = true
+                    } label: {
+                        Label(store.accountMonth, systemImage: "calendar")
+                            .labelStyle(.titleAndIcon)
+                    }
+                }
+            }
+            .sheet(isPresented: $isShowingMonthPicker) {
+                MonthPickerView()
+            }
         }
+    }
+}
+
+struct ExpenseCategoryDetailView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let item: ExpenseTypeSummary
+
+    var body: some View {
+        List {
+            Section("金额") {
+                SummaryRow(title: item.typeName, value: item.amount)
+            }
+
+            Section("来源") {
+                NavigationLink {
+                    SourceRecordsView(
+                        title: "\(item.typeName) 来源",
+                        filterDescription: "\(store.accountMonth) / \(item.typeName)",
+                        recordIds: item.sourceRecordIds
+                    )
+                } label: {
+                    Text("来源流水 \(item.sourceRecordIds.count) 条")
+                }
+            }
+        }
+        .navigationTitle(item.typeName)
     }
 }
 
@@ -438,6 +795,9 @@ struct JournalRecordRow: View {
             }
             Text("\(record.paymentTypeName) / \(record.paymentDetailName)")
                 .foregroundStyle(.secondary)
+            Text(record.recordSource.displayName)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             if let note = record.note, !note.isEmpty {
                 Text(note)
                     .font(.caption)
@@ -466,5 +826,20 @@ private extension Decimal {
     var mingZhangAmountText: String {
         let number = NSDecimalNumber(decimal: self)
         return number.stringValue
+    }
+}
+
+private extension RecordSource {
+    var displayName: String {
+        switch self {
+        case .manual:
+            return "手工"
+        case .import:
+            return "导入"
+        case .investmentFeed:
+            return "投资回填"
+        case .engine:
+            return "引擎"
+        }
     }
 }

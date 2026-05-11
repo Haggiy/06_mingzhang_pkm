@@ -5,6 +5,8 @@ import MingZhangCore
 @MainActor
 final class LedgerStore: ObservableObject {
     @Published private(set) var accountMonth = "2026-04"
+    @Published private(set) var availableAccountMonths: [String] = ["2026-04"]
+    @Published private(set) var journalFilter = JournalRecordFilter(accountMonths: ["2026-04"])
     @Published private(set) var records: [JournalRecord] = []
     @Published private(set) var methods: [PaymentMethod] = []
     @Published private(set) var types: [PaymentType] = []
@@ -34,11 +36,53 @@ final class LedgerStore: ObservableObject {
         methods = try useCases.queryPaymentMethods()
         types = try useCases.queryPaymentTypes()
         details = try useCases.queryPaymentDetails()
-        records = try useCases.queryJournalRecords(filter: JournalRecordFilter(accountMonths: [accountMonth]))
+        let queriedMonths = try useCases.queryAccountMonths()
+        availableAccountMonths = queriedMonths.isEmpty ? [accountMonth] : queriedMonths
+        if !availableAccountMonths.contains(accountMonth), let first = availableAccountMonths.first {
+            accountMonth = first
+        }
+        journalFilter.accountMonths = [accountMonth]
+        records = try useCases.queryJournalRecords(filter: journalFilter)
         homeSummary = try useCases.queryHomeSummary(accountMonth: accountMonth)
         balanceSummary = try useCases.queryBalanceSummary(accountMonth: accountMonth)
         statisticsSummary = try useCases.queryStatisticsSummary(accountMonth: accountMonth)
         lastError = nil
+    }
+
+    func selectAccountMonth(_ month: String) -> Bool {
+        do {
+            accountMonth = month
+            journalFilter.accountMonths = [month]
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func applyJournalFilter(_ filter: JournalRecordFilter) -> Bool {
+        do {
+            var scopedFilter = filter
+            scopedFilter.accountMonths = [accountMonth]
+            journalFilter = scopedFilter
+            guard let useCases else { return false }
+            records = try useCases.queryJournalRecords(filter: scopedFilter)
+            lastError = nil
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func clearJournalFilter() -> Bool {
+        applyJournalFilter(JournalRecordFilter(accountMonths: [accountMonth]))
+    }
+
+    func queryRecords(filter: JournalRecordFilter) throws -> [JournalRecord] {
+        guard let useCases else { return [] }
+        return try useCases.queryJournalRecords(filter: filter)
     }
 
     func querySourceRecords(recordIds: [UUID]) throws -> [JournalRecord] {
@@ -49,7 +93,8 @@ final class LedgerStore: ObservableObject {
     func createRecord(input: JournalFormInput) -> Bool {
         do {
             guard let useCases else { return false }
-            _ = try useCases.createManualRecord(input: try input.toCreateInput())
+            let created = try useCases.createManualRecord(input: try input.toCreateInput())
+            accountMonth = created.accountMonth
             try refresh()
             return true
         } catch {
@@ -61,10 +106,11 @@ final class LedgerStore: ObservableObject {
     func updateRecord(id: UUID, input: JournalFormInput) -> Bool {
         do {
             guard let useCases else { return false }
-            _ = try useCases.updateJournalRecord(
+            let updated = try useCases.updateJournalRecord(
                 id: id,
                 changes: try input.toChanges()
             )
+            accountMonth = updated.accountMonth
             try refresh()
             return true
         } catch {
