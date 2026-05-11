@@ -100,6 +100,72 @@ final class P0LedgerFlowTests: XCTestCase {
         XCTAssertTrue(engineRecords.isEmpty)
     }
 
+    func testCashExpenseReducesCashAssetAndRecalculates() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let record = try useCases.createManualRecord(
+            input: sampleInput(paymentMethodName: "电子钱包余额", amount: Decimal(100))
+        )
+
+        var home = try useCases.queryHomeSummary(accountMonth: "2026-04")
+        var balance = try useCases.queryBalanceSummary(accountMonth: "2026-04")
+        var statistics = try useCases.queryStatisticsSummary(accountMonth: "2026-04")
+        var engineRecords = try useCases.queryJournalRecords(
+            filter: JournalRecordFilter(accountMonths: ["2026-04"], includeEngineRecords: true)
+        ).filter { $0.recordSource == .engine }
+
+        XCTAssertEqual(home.expenseTotal, Decimal(100))
+        XCTAssertEqual(statistics.expenseByType, [
+            ExpenseTypeSummary(typeName: "生活必要开支", amount: Decimal(100), sourceRecordIds: [record.id])
+        ])
+        XCTAssertEqual(balance.cashBalance, Decimal(-100))
+        XCTAssertEqual(balance.cashSourceRecordIds, [record.id])
+        XCTAssertTrue(balance.liabilityItems.isEmpty)
+        XCTAssertEqual(engineRecords.count, 1)
+        XCTAssertEqual(engineRecords.first?.engineFamily, .cash)
+        XCTAssertEqual(engineRecords.first?.engineKey, "2026-04:cash:ending_balance:cash_pool:电子钱包余额")
+        XCTAssertEqual(engineRecords.first?.sourceRecordIds, [record.id])
+
+        try useCases.updateJournalRecord(
+            id: record.id,
+            changes: JournalRecordChanges(amount: Decimal(120))
+        )
+
+        home = try useCases.queryHomeSummary(accountMonth: "2026-04")
+        balance = try useCases.queryBalanceSummary(accountMonth: "2026-04")
+        statistics = try useCases.queryStatisticsSummary(accountMonth: "2026-04")
+        engineRecords = try useCases.queryJournalRecords(
+            filter: JournalRecordFilter(accountMonths: ["2026-04"], includeEngineRecords: true)
+        ).filter { $0.recordSource == .engine }
+
+        XCTAssertEqual(home.expenseTotal, Decimal(120))
+        XCTAssertEqual(statistics.expenseByType, [
+            ExpenseTypeSummary(typeName: "生活必要开支", amount: Decimal(120), sourceRecordIds: [record.id])
+        ])
+        XCTAssertEqual(balance.cashBalance, Decimal(-120))
+        XCTAssertEqual(balance.cashSourceRecordIds, [record.id])
+        XCTAssertTrue(balance.liabilityItems.isEmpty)
+        XCTAssertEqual(engineRecords.count, 1)
+        XCTAssertEqual(engineRecords.first?.amount, Decimal(-120))
+
+        try useCases.deleteJournalRecord(id: record.id)
+
+        home = try useCases.queryHomeSummary(accountMonth: "2026-04")
+        balance = try useCases.queryBalanceSummary(accountMonth: "2026-04")
+        statistics = try useCases.queryStatisticsSummary(accountMonth: "2026-04")
+        engineRecords = try useCases.queryJournalRecords(
+            filter: JournalRecordFilter(accountMonths: ["2026-04"], includeEngineRecords: true)
+        ).filter { $0.recordSource == .engine }
+
+        XCTAssertEqual(home.expenseTotal, Decimal(0))
+        XCTAssertEqual(balance.cashBalance, Decimal(0))
+        XCTAssertTrue(balance.cashSourceRecordIds.isEmpty)
+        XCTAssertTrue(statistics.expenseByType.isEmpty)
+        XCTAssertTrue(engineRecords.isEmpty)
+    }
+
     func testEngineRecordDoesNotTriggerEngineAgain() throws {
         let database = try LedgerDatabase.inMemory()
         let useCases = LedgerUseCases(database: database)
