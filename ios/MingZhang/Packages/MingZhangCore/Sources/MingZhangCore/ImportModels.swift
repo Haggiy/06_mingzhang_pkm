@@ -122,6 +122,7 @@ public struct ImportCandidateRecord: Equatable, Identifiable, Sendable {
 
 public struct ImportCandidateChanges: Equatable, Sendable {
     public var accountMonth: String?
+    public var amount: Decimal?
     public var paymentMethodName: String?
     public var paymentTypeName: String?
     public var paymentDetailName: String?
@@ -129,12 +130,14 @@ public struct ImportCandidateChanges: Equatable, Sendable {
 
     public init(
         accountMonth: String? = nil,
+        amount: Decimal? = nil,
         paymentMethodName: String? = nil,
         paymentTypeName: String? = nil,
         paymentDetailName: String? = nil,
         note: String? = nil
     ) {
         self.accountMonth = accountMonth
+        self.amount = amount
         self.paymentMethodName = paymentMethodName
         self.paymentTypeName = paymentTypeName
         self.paymentDetailName = paymentDetailName

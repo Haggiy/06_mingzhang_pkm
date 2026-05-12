@@ -643,7 +643,7 @@ public final class LedgerUseCases: @unchecked Sendable {
                 }
                 let type = try requirePaymentType(db, id: typeId)
                 let detail = try requirePaymentDetail(db, id: detailId)
-                let recordAmount = candidate.amount < Decimal(0) ? -candidate.amount : candidate.amount
+                let recordAmount = candidate.amount
                 try validateRecordFields(
                     accountMonth: candidate.accountMonth,
                     amount: recordAmount,
@@ -1616,6 +1616,12 @@ private func applyImportCandidateChanges(
         try validateAccountMonth(accountMonth)
         candidate.accountMonth = accountMonth
     }
+    if let amount = changes.amount {
+        guard amount != Decimal(0) else {
+            throw MingZhangError.validation("金额不能为 0")
+        }
+        candidate.amount = amount
+    }
     if let paymentMethodName = changes.paymentMethodName {
         let method = try requirePaymentMethod(db, name: paymentMethodName)
         candidate.paymentMethodId = method.id
@@ -1655,8 +1661,18 @@ private func importCandidateExists(
             SELECT COUNT(*)
             FROM import_candidates
             JOIN import_batches ON import_batches.id = import_candidates.batch_id
+            LEFT JOIN journal_records ON journal_records.id = import_candidates.created_journal_record_id
             WHERE import_batches.source = ? AND import_candidates.raw_transaction_id = ?
-            """, arguments: [source.rawValue, transactionId]) ?? 0
+              AND (
+                import_candidates.status = ?
+                OR (import_candidates.status = ? AND journal_records.id IS NOT NULL)
+              )
+            """, arguments: [
+                source.rawValue,
+                transactionId,
+                ImportCandidateStatus.pending.rawValue,
+                ImportCandidateStatus.confirmed.rawValue
+            ]) ?? 0
         return count > 0
     }
 
@@ -1664,10 +1680,20 @@ private func importCandidateExists(
         SELECT COUNT(*)
         FROM import_candidates
         JOIN import_batches ON import_batches.id = import_candidates.batch_id
+        LEFT JOIN journal_records ON journal_records.id = import_candidates.created_journal_record_id
         WHERE import_batches.source = ?
           AND import_candidates.raw_transaction_id IS NULL
           AND import_candidates.raw_fingerprint = ?
-        """, arguments: [source.rawValue, fingerprint]) ?? 0
+          AND (
+            import_candidates.status = ?
+            OR (import_candidates.status = ? AND journal_records.id IS NOT NULL)
+          )
+        """, arguments: [
+            source.rawValue,
+            fingerprint,
+            ImportCandidateStatus.pending.rawValue,
+            ImportCandidateStatus.confirmed.rawValue
+        ]) ?? 0
     return count > 0
 }
 
@@ -2005,15 +2031,10 @@ private func parseAlipayLine(
     let category = cleanImportField(fields[1])
     let counterparty = cleanImportField(fields[2])
     let product = cleanImportField(fields[safe: 4] ?? "")
-    let direction = cleanImportField(fields[safe: 5] ?? "")
     let amountText = cleanImportField(fields[safe: 6] ?? "")
     let paymentMethodName = cleanImportField(fields[safe: 7] ?? "")
     let transactionId = nonEmptyImportField(fields[safe: 9])
 
-    guard direction == "收入" || direction == "支出" else {
-        issues.append(ImportIssue(lineNumber: lineNumber, code: .unsupportedDirection, message: "支付宝不计收支或未知方向不生成候选"))
-        return
-    }
     guard let occurredAt = parseImportDate(occurredAtText) else {
         issues.append(ImportIssue(lineNumber: lineNumber, code: .invalidDate, message: "无法识别交易时间"))
         return
@@ -2023,7 +2044,7 @@ private func parseAlipayLine(
         return
     }
 
-    let amount = direction == "支出" ? -unsignedAmount : unsignedAmount
+    let amount = absoluteDecimal(unsignedAmount)
     let note = makeImportNote(prefix: category, counterparty: counterparty, product: product)
     rows.append(ParsedImportRow(
         lineNumber: lineNumber,
@@ -2034,7 +2055,7 @@ private func parseAlipayLine(
         amount: amount,
         note: note,
         rawTransactionId: transactionId,
-        rawFingerprint: makeRawFingerprint(occurredAtText: occurredAtText, amount: amount, counterparty: counterparty, product: product)
+        rawFingerprint: makeRawFingerprint(source: .alipay, rawPayload: line)
     ))
 }
 
@@ -2054,19 +2075,10 @@ private func parseWechatLine(
     let transactionType = cleanImportField(fields[1])
     let counterparty = cleanImportField(fields[2])
     let product = cleanImportField(fields[3])
-    let direction = cleanImportField(fields[4])
     let amountText = cleanImportField(fields[5])
     let paymentMethodName = cleanImportField(fields[6])
     let transactionId = nonEmptyImportField(fields[safe: 8])
 
-    if isWechatNeutralTransaction(transactionType) {
-        issues.append(ImportIssue(lineNumber: lineNumber, code: .unsupportedDirection, message: "微信中性交易不生成候选"))
-        return
-    }
-    guard direction == "收入" || direction == "支出" else {
-        issues.append(ImportIssue(lineNumber: lineNumber, code: .unsupportedDirection, message: "微信未知方向不生成候选"))
-        return
-    }
     guard let occurredAt = parseImportDate(occurredAtText) else {
         issues.append(ImportIssue(lineNumber: lineNumber, code: .invalidDate, message: "无法识别交易时间"))
         return
@@ -2076,7 +2088,7 @@ private func parseWechatLine(
         return
     }
 
-    let amount = direction == "支出" ? -unsignedAmount : unsignedAmount
+    let amount = absoluteDecimal(unsignedAmount)
     let note = makeImportNote(prefix: transactionType, counterparty: counterparty, product: product)
     rows.append(ParsedImportRow(
         lineNumber: lineNumber,
@@ -2087,7 +2099,7 @@ private func parseWechatLine(
         amount: amount,
         note: note,
         rawTransactionId: transactionId,
-        rawFingerprint: makeRawFingerprint(occurredAtText: occurredAtText, amount: amount, counterparty: counterparty, product: product)
+        rawFingerprint: makeRawFingerprint(source: .wechat, rawPayload: line)
     ))
 }
 
@@ -2156,6 +2168,10 @@ private func parseImportAmount(_ value: String) -> Decimal? {
     return amount
 }
 
+private func absoluteDecimal(_ value: Decimal) -> Decimal {
+    value < Decimal(0) ? -value : value
+}
+
 private func accountMonthString(from date: Date) -> String {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -2185,17 +2201,12 @@ private func makeImportNote(prefix: String, counterparty: String, product: Strin
     return "[\(prefix)] \(body)"
 }
 
-private func makeRawFingerprint(
-    occurredAtText: String,
-    amount: Decimal,
-    counterparty: String,
-    product: String
-) -> String {
+private func makeRawFingerprint(source: ImportSource, rawPayload: String) -> String {
     let payload = [
-        occurredAtText,
-        encodeDecimal(amount),
-        counterparty,
-        product
+        source.rawValue,
+        rawPayload
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\t", with: "")
     ].joined(separator: "|")
     let digest = SHA256.hash(data: Data(payload.utf8))
     return digest.map { String(format: "%02x", $0) }.joined().prefix(16).description

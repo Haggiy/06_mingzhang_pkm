@@ -36,14 +36,14 @@ final class P1ImportFlowTests: XCTestCase {
         XCTAssertEqual(alipay.candidates.count, 2)
         XCTAssertEqual(alipay.issues.count, 0)
 
-        let alipayExpense = try XCTUnwrap(alipay.candidates.first { $0.amount < 0 })
+        let alipayExpense = try XCTUnwrap(alipay.candidates.first { $0.rawTransactionId == "ALIPAY-001" })
         XCTAssertEqual(alipayExpense.accountMonth, "2026-04")
-        XCTAssertEqual(alipayExpense.amount, Decimal(-100))
+        XCTAssertEqual(alipayExpense.amount, Decimal(100))
         XCTAssertEqual(alipayExpense.paymentMethodName, "广发卡(4896)")
         XCTAssertEqual(alipayExpense.rawTransactionId, "ALIPAY-001")
         XCTAssertEqual(alipayExpense.note, "[餐饮美食] 便利店 - 午餐")
 
-        let alipayIncome = try XCTUnwrap(alipay.candidates.first { $0.amount > 0 })
+        let alipayIncome = try XCTUnwrap(alipay.candidates.first { $0.rawTransactionId == "ALIPAY-002" })
         XCTAssertEqual(alipayIncome.amount, Decimal(50))
         XCTAssertEqual(alipayIncome.paymentMethodName, "余额")
 
@@ -52,7 +52,7 @@ final class P1ImportFlowTests: XCTestCase {
         XCTAssertEqual(wechat.issues.count, 0)
 
         let wechatExpense = try XCTUnwrap(wechat.candidates.first)
-        XCTAssertEqual(wechatExpense.amount, try decimal("-20.50"))
+        XCTAssertEqual(wechatExpense.amount, try decimal("20.50"))
         XCTAssertEqual(wechatExpense.paymentMethodName, "待补真实账户")
         XCTAssertEqual(wechatExpense.rawTransactionId, "WECHAT-001")
         XCTAssertEqual(wechatExpense.note, "[商户消费] 早餐店 - 早餐")
@@ -75,7 +75,7 @@ final class P1ImportFlowTests: XCTestCase {
 
         let candidate = try XCTUnwrap(result.candidates.first)
         XCTAssertEqual(candidate.accountMonth, "2026-04")
-        XCTAssertEqual(candidate.amount, try decimal("-20.50"))
+        XCTAssertEqual(candidate.amount, try decimal("20.50"))
         XCTAssertEqual(candidate.paymentMethodName, "待补真实账户")
         XCTAssertEqual(candidate.rawTransactionId, "WECHAT-XLSX-001")
         XCTAssertEqual(candidate.rawLineNumber, 18)
@@ -99,7 +99,7 @@ final class P1ImportFlowTests: XCTestCase {
 
         let candidate = try XCTUnwrap(result.candidates.first)
         XCTAssertEqual(candidate.accountMonth, "2026-04")
-        XCTAssertEqual(candidate.amount, Decimal(-100))
+        XCTAssertEqual(candidate.amount, Decimal(100))
         XCTAssertEqual(candidate.paymentMethodName, "广发卡(4896)")
         XCTAssertEqual(candidate.rawTransactionId, "ALIPAY-XLSX-001")
         XCTAssertEqual(candidate.rawLineNumber, 26)
@@ -139,6 +139,7 @@ final class P1ImportFlowTests: XCTestCase {
             id: candidate.id,
             changes: ImportCandidateChanges(
                 accountMonth: "2026-03",
+                amount: try decimal("-42.25"),
                 paymentMethodName: "电子钱包余额",
                 paymentTypeName: "生活必要开支",
                 paymentDetailName: "伙食费",
@@ -148,6 +149,7 @@ final class P1ImportFlowTests: XCTestCase {
 
         XCTAssertEqual(updated.accountMonth, "2026-03")
         XCTAssertEqual(updated.occurredAt, candidate.occurredAt)
+        XCTAssertEqual(updated.amount, try decimal("-42.25"))
         XCTAssertEqual(updated.paymentMethodName, "电子钱包余额")
 
         let batched = try useCases.batchUpdateImportCandidates(
@@ -172,7 +174,7 @@ final class P1ImportFlowTests: XCTestCase {
             fileName: "alipay-minimal.csv",
             contents: fixture("alipay-minimal.csv")
         )
-        let candidate = try XCTUnwrap(batch.candidates.first { $0.amount < 0 })
+        let candidate = try XCTUnwrap(batch.candidates.first { $0.rawTransactionId == "ALIPAY-001" })
         _ = try useCases.updateImportCandidate(
             id: candidate.id,
             changes: ImportCandidateChanges(
@@ -197,6 +199,33 @@ final class P1ImportFlowTests: XCTestCase {
         XCTAssertEqual(confirmedCandidate.createdJournalRecordId, records.first?.id)
     }
 
+    func testConfirmImportCandidatePreservesSignedAmountSemantics() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+        let batch = try useCases.createImportBatch(
+            source: .wechat,
+            fileName: "wechat-minimal.csv",
+            contents: fixture("wechat-minimal.csv")
+        )
+        let candidate = try XCTUnwrap(batch.candidates.first)
+        let updated = try useCases.updateImportCandidate(
+            id: candidate.id,
+            changes: ImportCandidateChanges(
+                amount: try decimal("-20.50"),
+                paymentMethodName: "广发卡",
+                paymentTypeName: "生活必要开支",
+                paymentDetailName: "伙食费"
+            )
+        )
+
+        let record = try XCTUnwrap(try useCases.confirmImportCandidates(ids: [updated.id]).first)
+
+        XCTAssertEqual(updated.amount, try decimal("-20.50"))
+        XCTAssertEqual(record.amount, try decimal("-20.50"))
+        XCTAssertEqual(record.sourceImportCandidateId, updated.id)
+    }
+
     func testImportRecordCanTraceBackToBatchAndRawCandidate() throws {
         let database = try LedgerDatabase.inMemory()
         let useCases = LedgerUseCases(database: database)
@@ -206,7 +235,7 @@ final class P1ImportFlowTests: XCTestCase {
             fileName: "alipay-minimal.csv",
             contents: fixture("alipay-minimal.csv")
         )
-        let candidate = try XCTUnwrap(batch.candidates.first { $0.amount < 0 })
+        let candidate = try XCTUnwrap(batch.candidates.first { $0.rawTransactionId == "ALIPAY-001" })
         _ = try useCases.batchUpdateImportCandidates(
             ids: [candidate.id],
             changes: ImportCandidateChanges(
@@ -265,7 +294,59 @@ final class P1ImportFlowTests: XCTestCase {
         XCTAssertEqual(duplicate.issues.first?.code, .duplicate)
     }
 
-    func testImportSkipsNonRevenueExpenseTransactions() throws {
+    func testRowsWithoutTransactionIdUseFullRawPayloadFingerprint() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let result = try useCases.createImportBatch(
+            source: .wechat,
+            fileName: "wechat-no-transaction-id.csv",
+            contents: """
+            微信支付账单明细,,,,,,,,
+            ----------------------微信支付账单明细列表--------------------,,,,,,,,
+            交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注
+            2026-04-15 10:00:00,商户消费,同一商户,同一商品,支出,¥10.00,零钱,支付成功,/,M-001,/
+            2026-04-15 10:00:00,商户消费,同一商户,同一商品,支出,¥10.00,中国银行储蓄卡,支付成功,/,M-002,/
+            """
+        )
+
+        XCTAssertEqual(result.candidates.count, 2)
+        XCTAssertFalse(result.issues.contains { $0.code == .duplicate })
+        XCTAssertTrue(result.candidates.allSatisfy { $0.rawTransactionId == nil })
+        XCTAssertEqual(Set(result.candidates.map(\.rawFingerprint)).count, 2)
+    }
+
+    func testDeleteImportedRecordAllowsSameRawLineToBeImportedAgain() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+        let contents = """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-15 12:30:45,餐饮美食,便利店,/,午餐,支出,100.00,广发卡,交易成功,ALIPAY-REIMPORT-001\t,\t,,
+        """
+        let batch = try useCases.createImportBatch(source: .alipay, fileName: "reimport.csv", contents: contents)
+        let candidate = try XCTUnwrap(batch.candidates.first)
+        _ = try useCases.updateImportCandidate(
+            id: candidate.id,
+            changes: ImportCandidateChanges(
+                paymentMethodName: "广发卡",
+                paymentTypeName: "生活必要开支",
+                paymentDetailName: "伙食费"
+            )
+        )
+        let record = try XCTUnwrap(try useCases.confirmImportCandidates(ids: [candidate.id]).first)
+
+        try useCases.deleteJournalRecord(id: record.id)
+        let importedAgain = try useCases.createImportBatch(source: .alipay, fileName: "reimport-again.csv", contents: contents)
+
+        XCTAssertEqual(importedAgain.candidates.count, 1)
+        XCTAssertFalse(importedAgain.issues.contains { $0.code == .duplicate })
+        XCTAssertEqual(importedAgain.candidates.first?.rawTransactionId, "ALIPAY-REIMPORT-001")
+    }
+
+    func testImportCreatesCandidatesForAllRevenueAndNeutralRows() throws {
         let database = try LedgerDatabase.inMemory()
         let useCases = LedgerUseCases(database: database)
         try useCases.initializeLedgerSeed()
@@ -281,8 +362,13 @@ final class P1ImportFlowTests: XCTestCase {
             2026-04-15 14:00:00,餐饮美食,便利店,/,午餐,支出,30.00,广发卡,交易成功,ALIPAY-VALID-001\t,\t,,
             """
         )
-        XCTAssertEqual(alipayNeutral.candidates.count, 1)
-        XCTAssertEqual(alipayNeutral.issues.filter { $0.code == .unsupportedDirection }.count, 2)
+        XCTAssertEqual(alipayNeutral.candidates.count, 3)
+        XCTAssertTrue(alipayNeutral.issues.filter { $0.code == .unsupportedDirection }.isEmpty)
+        XCTAssertEqual(Set(alipayNeutral.candidates.compactMap(\.rawTransactionId)), [
+            "ALIPAY-NEUTRAL-001",
+            "ALIPAY-NEUTRAL-002",
+            "ALIPAY-VALID-001"
+        ])
 
         let wechatNeutral = try useCases.createImportBatch(
             source: .wechat,
@@ -310,8 +396,13 @@ final class P1ImportFlowTests: XCTestCase {
             2026-04-15 14:00:00,商户消费,便利店,午餐,支出,¥30.00,零钱,支付成功,WX-VALID-001\t,\t,/
             """
         )
-        XCTAssertEqual(wechatNeutral.candidates.count, 1)
-        XCTAssertEqual(wechatNeutral.issues.filter { $0.code == .unsupportedDirection }.count, 2)
+        XCTAssertEqual(wechatNeutral.candidates.count, 3)
+        XCTAssertTrue(wechatNeutral.issues.filter { $0.code == .unsupportedDirection }.isEmpty)
+        XCTAssertEqual(Set(wechatNeutral.candidates.compactMap(\.rawTransactionId)), [
+            "WX-NEUTRAL-001",
+            "WX-NEUTRAL-002",
+            "WX-VALID-001"
+        ])
 
         let wechatTransfer = try useCases.createImportBatch(
             source: .wechat,
@@ -339,10 +430,10 @@ final class P1ImportFlowTests: XCTestCase {
             """
         )
         XCTAssertEqual(wechatTransfer.candidates.count, 2)
-        let transferIncome = try XCTUnwrap(wechatTransfer.candidates.first { $0.amount > 0 })
-        let transferExpense = try XCTUnwrap(wechatTransfer.candidates.first { $0.amount < 0 })
+        let transferIncome = try XCTUnwrap(wechatTransfer.candidates.first { $0.rawTransactionId == "WX-TRANSFER-001" })
+        let transferExpense = try XCTUnwrap(wechatTransfer.candidates.first { $0.rawTransactionId == "WX-TRANSFER-002" })
         XCTAssertEqual(transferIncome.amount, Decimal(70))
-        XCTAssertEqual(transferExpense.amount, Decimal(-20))
+        XCTAssertEqual(transferExpense.amount, Decimal(20))
     }
 
     func testP1AlipayWechatImportEndToEnd() throws {
@@ -353,7 +444,7 @@ final class P1ImportFlowTests: XCTestCase {
         let alipay = try useCases.createImportBatch(source: .alipay, fileName: "alipay-minimal.csv", contents: fixture("alipay-minimal.csv"))
         let wechat = try useCases.createImportBatch(source: .wechat, fileName: "wechat-minimal.csv", contents: fixture("wechat-minimal.csv"))
         let ids = (alipay.candidates + wechat.candidates)
-            .filter { $0.amount < 0 }
+            .filter { ["ALIPAY-001", "WECHAT-001"].contains($0.rawTransactionId) }
             .map(\.id)
 
         _ = try useCases.batchUpdateImportCandidates(

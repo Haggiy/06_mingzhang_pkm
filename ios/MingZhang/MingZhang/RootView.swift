@@ -602,6 +602,7 @@ struct ImportCandidateEditView: View {
     @Environment(\.dismiss) private var dismiss
     let candidate: ImportCandidateRecord
     @State private var accountMonth: String
+    @State private var amountText: String
     @State private var paymentMethodName: String
     @State private var paymentTypeName: String
     @State private var paymentDetailName: String
@@ -610,6 +611,7 @@ struct ImportCandidateEditView: View {
     init(candidate: ImportCandidateRecord) {
         self.candidate = candidate
         _accountMonth = State(initialValue: candidate.accountMonth)
+        _amountText = State(initialValue: NSDecimalNumber(decimal: candidate.amount).stringValue)
         _paymentMethodName = State(initialValue: candidate.paymentMethodName ?? "待补真实账户")
         _paymentTypeName = State(initialValue: candidate.paymentTypeName ?? "")
         _paymentDetailName = State(initialValue: candidate.paymentDetailName ?? "")
@@ -621,6 +623,8 @@ struct ImportCandidateEditView: View {
             Section("候选") {
                 TextField("账月", text: $accountMonth)
                     .textInputAutocapitalization(.never)
+                TextField("金额", text: $amountText)
+                    .keyboardType(.numbersAndPunctuation)
                 Picker("收付手段", selection: $paymentMethodName) {
                     ForEach(paymentMethodOptions, id: \.self) { name in
                         Text(name).tag(name)
@@ -652,8 +656,12 @@ struct ImportCandidateEditView: View {
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("保存") {
-                    if store.updateImportCandidate(id: candidate.id, changes: changes) {
-                        dismiss()
+                    do {
+                        if store.updateImportCandidate(id: candidate.id, changes: try makeChanges()) {
+                            dismiss()
+                        }
+                    } catch {
+                        store.lastError = error.localizedDescription
                     }
                 }
                 .disabled(candidate.status != .pending)
@@ -681,9 +689,17 @@ struct ImportCandidateEditView: View {
         return store.details.filter { $0.paymentTypeId == typeId }
     }
 
-    private var changes: ImportCandidateChanges {
-        ImportCandidateChanges(
+    private func makeChanges() throws -> ImportCandidateChanges {
+        let trimmedAmount = amountText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let amount = Decimal(string: trimmedAmount, locale: Locale(identifier: "en_US_POSIX")) else {
+            throw MingZhangError.validation("金额必须是有效数字")
+        }
+        guard amount != Decimal(0) else {
+            throw MingZhangError.validation("金额不能为 0")
+        }
+        return ImportCandidateChanges(
             accountMonth: accountMonth,
+            amount: amount,
             paymentMethodName: paymentMethodName,
             paymentTypeName: paymentTypeName.isEmpty ? nil : paymentTypeName,
             paymentDetailName: paymentDetailName.isEmpty ? nil : paymentDetailName,
