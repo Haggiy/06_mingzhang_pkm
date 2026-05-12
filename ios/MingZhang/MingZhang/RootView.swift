@@ -540,7 +540,7 @@ struct ImportCandidateListView: View {
     }
 
     private var importContentTypes: [UTType] {
-        [.plainText, .text, UTType(filenameExtension: "csv")].compactMap { $0 }
+        [.plainText, .text, UTType(filenameExtension: "csv"), UTType(filenameExtension: "xlsx")].compactMap { $0 }
     }
 
     private func toggleSelection(_ id: UUID) {
@@ -564,8 +564,8 @@ struct ImportCandidateListView: View {
                     url.stopAccessingSecurityScopedResource()
                 }
             }
-            let contents = try readImportText(from: url)
-            _ = store.createImportBatch(source: source, fileName: url.lastPathComponent, contents: contents)
+            let data = try Data(contentsOf: url)
+            _ = store.createImportBatch(source: source, fileName: url.lastPathComponent, data: data)
         } catch {
             store.lastError = error.localizedDescription
         }
@@ -1248,17 +1248,6 @@ struct SummaryRow: View {
     }
 }
 
-private func readImportText(from url: URL) throws -> String {
-    let data = try Data(contentsOf: url)
-    let encodings: [String.Encoding] = [.utf8, .unicode, .utf16, .gb18030]
-    for encoding in encodings {
-        if let value = String(data: data, encoding: encoding) {
-            return value
-        }
-    }
-    throw MingZhangError.validation("无法读取账单文件编码")
-}
-
 private extension Decimal {
     var mingZhangAmountText: String {
         let number = NSDecimalNumber(decimal: self)
@@ -1308,13 +1297,5 @@ private extension ImportIssueCode {
         case .unsupportedDirection:
             return "非收支交易"
         }
-    }
-}
-
-private extension String.Encoding {
-    static var gb18030: String.Encoding {
-        String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
-            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
-        ))
     }
 }

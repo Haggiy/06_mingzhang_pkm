@@ -1,5 +1,8 @@
 import Foundation
 import CryptoKit
+import class CoreXLSX.XLSXFile
+import struct CoreXLSX.Cell
+import struct CoreXLSX.SharedStrings
 import GRDB
 
 public enum MingZhangError: Error, Equatable, LocalizedError {
@@ -490,8 +493,29 @@ public final class LedgerUseCases: @unchecked Sendable {
         fileName: String?,
         contents: String
     ) throws -> CreateImportBatchResult {
-        let parseResult = try parseImportRows(source: source, contents: contents)
+        try createImportBatch(source: source, fileName: fileName, parseResult: try parseImportRows(source: source, contents: contents))
+    }
 
+    @discardableResult
+    public func createImportBatch(
+        source: ImportSource,
+        fileName: String?,
+        data: Data
+    ) throws -> CreateImportBatchResult {
+        let parseResult: ImportParseResult
+        if fileName?.lowercased().hasSuffix(".xlsx") == true || data.starts(with: [0x50, 0x4B, 0x03, 0x04]) {
+            parseResult = try parseXLSXImportRows(source: source, data: data)
+        } else {
+            parseResult = try parseImportRows(source: source, contents: try decodeImportText(data))
+        }
+        return try createImportBatch(source: source, fileName: fileName, parseResult: parseResult)
+    }
+
+    private func createImportBatch(
+        source: ImportSource,
+        fileName: String?,
+        parseResult: ImportParseResult
+    ) throws -> CreateImportBatchResult {
         return try database.writer.write { db in
             let now = Date()
             let batch = ImportBatch(
@@ -1887,6 +1911,68 @@ private func parseImportRows(source: ImportSource, contents: String) throws -> I
     return ImportParseResult(rows: rows, issues: issues)
 }
 
+private func parseXLSXImportRows(source: ImportSource, data: Data) throws -> ImportParseResult {
+    let file = try XLSXFile(data: data)
+    guard
+        let workbook = try file.parseWorkbooks().first,
+        let worksheetPath = try file.parseWorksheetPathsAndNames(workbook: workbook).first?.path
+    else {
+        throw MingZhangError.validation("无法识别 XLSX 工作表")
+    }
+
+    let worksheet = try file.parseWorksheet(at: worksheetPath)
+    let sharedStrings = try file.parseSharedStrings()
+    let rows = worksheet.data?.rows ?? []
+    let maxRow = rows.map(\.reference).max() ?? 0
+    guard maxRow > 0 else {
+        throw MingZhangError.validation(source == .alipay ? "无法识别支付宝账单字段" : "无法识别微信账单字段")
+    }
+
+    var lines = Array(repeating: "", count: Int(maxRow))
+    for row in rows {
+        lines[Int(row.reference) - 1] = xlsxRowCSVLine(row.cells, sharedStrings: sharedStrings)
+    }
+    return try parseImportRows(source: source, contents: lines.joined(separator: "\n"))
+}
+
+private func xlsxRowCSVLine(_ cells: [Cell], sharedStrings: SharedStrings?) -> String {
+    let valuesByColumn = Dictionary(uniqueKeysWithValues: cells.map { cell in
+        (xlsxColumnIndex(cell.reference.column.description), xlsxCellText(cell, sharedStrings: sharedStrings))
+    })
+    let maxColumn = valuesByColumn.keys.max() ?? 0
+    guard maxColumn > 0 else { return "" }
+    return (1...maxColumn)
+        .map { csvEscapedField(valuesByColumn[$0] ?? "") }
+        .joined(separator: ",")
+}
+
+private func xlsxCellText(_ cell: Cell, sharedStrings: SharedStrings?) -> String {
+    if let sharedStrings, let value = cell.stringValue(sharedStrings) {
+        return value
+    }
+    if let text = cell.inlineString?.text {
+        return text
+    }
+    if let date = cell.dateValue {
+        return importDateTimeString(from: date)
+    }
+    return cell.value ?? ""
+}
+
+private func xlsxColumnIndex(_ value: String) -> Int {
+    value.uppercased().unicodeScalars.reduce(0) { result, scalar in
+        guard (65...90).contains(scalar.value) else { return result }
+        return result * 26 + Int(scalar.value - 64)
+    }
+}
+
+private func csvEscapedField(_ value: String) -> String {
+    guard value.contains(",") || value.contains("\"") || value.contains("\n") else {
+        return value
+    }
+    return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
+}
+
 private func isImportHeaderLine(_ line: String, source: ImportSource) -> Bool {
     let normalized = cleanImportField(line)
     switch source {
@@ -2078,6 +2164,14 @@ private func accountMonthString(from date: Date) -> String {
     return formatter.string(from: date)
 }
 
+private func importDateTimeString(from date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    return formatter.string(from: date)
+}
+
 private func makeImportNote(prefix: String, counterparty: String, product: String) -> String? {
     let parts = [counterparty, product].filter { !$0.isEmpty && $0 != "/" }
     guard !prefix.isEmpty || !parts.isEmpty else { return nil }
@@ -2107,6 +2201,16 @@ private func makeRawFingerprint(
     return digest.map { String(format: "%02x", $0) }.joined().prefix(16).description
 }
 
+private func decodeImportText(_ data: Data) throws -> String {
+    let encodings: [String.Encoding] = [.utf8, .unicode, .utf16, .gb18030]
+    for encoding in encodings {
+        if let value = String(data: data, encoding: encoding) {
+            return value
+        }
+    }
+    throw MingZhangError.validation("无法读取账单文件编码")
+}
+
 private func isWechatNeutralTransaction(_ type: String) -> Bool {
     type == "零钱提现" ||
         type == "信用卡还款" ||
@@ -2117,6 +2221,14 @@ private func isWechatNeutralTransaction(_ type: String) -> Bool {
 private extension Array {
     subscript(safe index: Int) -> Element? {
         indices.contains(index) ? self[index] : nil
+    }
+}
+
+private extension String.Encoding {
+    static var gb18030: String.Encoding {
+        String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+        ))
     }
 }
 

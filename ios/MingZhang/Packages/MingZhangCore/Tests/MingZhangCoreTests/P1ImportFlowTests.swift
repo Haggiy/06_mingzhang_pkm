@@ -58,6 +58,54 @@ final class P1ImportFlowTests: XCTestCase {
         XCTAssertEqual(wechatExpense.note, "[商户消费] 早餐店 - 早餐")
     }
 
+    func testCreateImportBatchMapsWechatXLSXRowsToCandidates() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let result = try useCases.createImportBatch(
+            source: .wechat,
+            fileName: "wechat-minimal.xlsx",
+            data: fixtureData("wechat-minimal.xlsx")
+        )
+
+        XCTAssertEqual(result.batch.source, .wechat)
+        XCTAssertEqual(result.candidates.count, 1)
+        XCTAssertEqual(result.issues.count, 0)
+
+        let candidate = try XCTUnwrap(result.candidates.first)
+        XCTAssertEqual(candidate.accountMonth, "2026-04")
+        XCTAssertEqual(candidate.amount, try decimal("-20.50"))
+        XCTAssertEqual(candidate.paymentMethodName, "待补真实账户")
+        XCTAssertEqual(candidate.rawTransactionId, "WECHAT-XLSX-001")
+        XCTAssertEqual(candidate.rawLineNumber, 18)
+        XCTAssertEqual(candidate.note, "[商户消费] 早餐店 - 早餐")
+    }
+
+    func testCreateImportBatchMapsAlipayXLSXRowsToCandidates() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let result = try useCases.createImportBatch(
+            source: .alipay,
+            fileName: "alipay-minimal.xlsx",
+            data: fixtureData("alipay-minimal.xlsx")
+        )
+
+        XCTAssertEqual(result.batch.source, .alipay)
+        XCTAssertEqual(result.candidates.count, 1)
+        XCTAssertEqual(result.issues.count, 0)
+
+        let candidate = try XCTUnwrap(result.candidates.first)
+        XCTAssertEqual(candidate.accountMonth, "2026-04")
+        XCTAssertEqual(candidate.amount, Decimal(-100))
+        XCTAssertEqual(candidate.paymentMethodName, "广发卡(4896)")
+        XCTAssertEqual(candidate.rawTransactionId, "ALIPAY-XLSX-001")
+        XCTAssertEqual(candidate.rawLineNumber, 26)
+        XCTAssertEqual(candidate.note, "[餐饮美食] 便利店 - 午餐")
+    }
+
     func testImportCandidatesDoNotAffectLedgerBeforeConfirmation() throws {
         let database = try LedgerDatabase.inMemory()
         let useCases = LedgerUseCases(database: database)
@@ -335,6 +383,15 @@ final class P1ImportFlowTests: XCTestCase {
             .appendingPathComponent("Fixtures")
             .appendingPathComponent(name)
         return try String(contentsOf: fixtureURL, encoding: .utf8)
+    }
+
+    private func fixtureData(_ name: String) throws -> Data {
+        let testFileURL = URL(fileURLWithPath: #filePath)
+        let fixtureURL = testFileURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("Fixtures")
+            .appendingPathComponent(name)
+        return try Data(contentsOf: fixtureURL)
     }
 
     private func decimal(_ value: String) throws -> Decimal {

@@ -108,12 +108,19 @@ final class LedgerStore: ObservableObject {
         do {
             guard let useCases else { return false }
             let result = try useCases.createImportBatch(source: source, fileName: fileName, contents: contents)
-            activeImportSource = source
-            activeImportBatch = result.batch
-            importCandidates = result.candidates
-            importIssues = result.issues
-            selectedImportCandidateIds = []
-            lastError = nil
+            applyImportResult(result, source: source)
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func createImportBatch(source: ImportSource, fileName: String?, data: Data) -> Bool {
+        do {
+            guard let useCases else { return false }
+            let result = try useCases.createImportBatch(source: source, fileName: fileName, data: data)
+            applyImportResult(result, source: source)
             return true
         } catch {
             lastError = error.localizedDescription
@@ -253,6 +260,15 @@ final class LedgerStore: ObservableObject {
             }
         }
         importCandidates = candidatesById.values.sorted { ($0.occurredAt, $0.rawLineNumber) < ($1.occurredAt, $1.rawLineNumber) }
+    }
+
+    private func applyImportResult(_ result: CreateImportBatchResult, source: ImportSource) {
+        activeImportSource = source
+        activeImportBatch = result.batch
+        importCandidates = result.candidates
+        importIssues = result.issues
+        selectedImportCandidateIds = []
+        lastError = nil
     }
 }
 

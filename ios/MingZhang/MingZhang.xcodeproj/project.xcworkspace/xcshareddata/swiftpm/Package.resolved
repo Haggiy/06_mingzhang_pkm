@@ -1,6 +1,15 @@
 {
-  "originHash" : "d0266868f223920c4a5b6678ee7a6d9c731e1a8dc4591637d059b6d84fff23c3",
+  "originHash" : "0ebb051462c42f1b71602be4c6fbd30d1ce21878521c3eeb5b98e2a0fb44fe1c",
   "pins" : [
+    {
+      "identity" : "corexlsx",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/CoreOffice/CoreXLSX.git",
+      "state" : {
+        "revision" : "1391f3832ea2eeee5186ea8abb81ea49ed0609cc",
+        "version" : "0.14.2"
+      }
+    },
     {
       "identity" : "grdb.swift",
       "kind" : "remoteSourceControl",
@@ -8,6 +17,24 @@
       "state" : {
         "revision" : "36e30a6f1ef10e4194f6af0cff90888526f0c115",
         "version" : "7.10.0"
+      }
+    },
+    {
+      "identity" : "xmlcoder",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/maxdesiatov/XMLCoder.git",
+      "state" : {
+        "revision" : "ca932442d7481700f5434a7b138c47dd42d9902b",
+        "version" : "0.14.0"
+      }
+    },
+    {
+      "identity" : "zipfoundation",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/weichsel/ZIPFoundation.git",
+      "state" : {
+        "revision" : "22787ffb59de99e5dc1fbfe80b19c97a904ad48d",
+        "version" : "0.9.20"
       }
     }
   ],
