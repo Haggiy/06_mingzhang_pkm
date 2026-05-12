@@ -1,5 +1,6 @@
 import SwiftUI
 import MingZhangCore
+import UniformTypeIdentifiers
 
 struct RootView: View {
     @EnvironmentObject private var store: LedgerStore
@@ -143,6 +144,7 @@ struct JournalView: View {
     @State private var isShowingForm = false
     @State private var isShowingMonthPicker = false
     @State private var isShowingFilter = false
+    @State private var isShowingImport = false
 
     var body: some View {
         NavigationStack {
@@ -186,7 +188,12 @@ struct JournalView: View {
                             .labelStyle(.titleAndIcon)
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        isShowingImport = true
+                    } label: {
+                        Label("导入账单", systemImage: "square.and.arrow.down")
+                    }
                     NavigationLink {
                         JournalSearchView()
                     } label: {
@@ -211,6 +218,9 @@ struct JournalView: View {
             }
             .sheet(isPresented: $isShowingFilter) {
                 JournalFilterView()
+            }
+            .sheet(isPresented: $isShowingImport) {
+                ImportSourcePickerView()
             }
         }
     }
@@ -369,6 +379,394 @@ struct JournalSearchView: View {
     }
 }
 
+struct ImportSourcePickerView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("来源") {
+                    NavigationLink {
+                        ImportCandidateListView(source: .alipay)
+                    } label: {
+                        Label("支付宝账单", systemImage: "creditcard")
+                    }
+                    NavigationLink {
+                        ImportCandidateListView(source: .wechat)
+                    } label: {
+                        Label("微信账单", systemImage: "message")
+                    }
+                }
+            }
+            .navigationTitle("导入账单")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct ImportCandidateListView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
+    let source: ImportSource
+    @State private var isShowingFileImporter = false
+    @State private var isShowingBatchEdit = false
+
+    var body: some View {
+        List {
+            Section("批次") {
+                LabeledContent("来源", value: source.displayName)
+                LabeledContent("待确认", value: "\(pendingCandidates.count)")
+                LabeledContent("已忽略", value: "\(ignoredCandidates.count)")
+                if let batch = store.activeImportBatch {
+                    LabeledContent("文件", value: batch.fileName ?? "未命名")
+                }
+            }
+
+            if !store.importIssues.isEmpty {
+                Section("问题") {
+                    ForEach(Array(store.importIssues.enumerated()), id: \.offset) { _, issue in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(issue.code.displayName)
+                            if let lineNumber = issue.lineNumber {
+                                Text("第 \(lineNumber) 行")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(issue.message)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
+            Section("候选") {
+                if store.importCandidates.isEmpty {
+                    ContentUnavailableView("暂无候选", systemImage: "tray")
+                } else {
+                    ForEach(store.importCandidates) { candidate in
+                        HStack(spacing: 12) {
+                            Button {
+                                toggleSelection(candidate.id)
+                            } label: {
+                                Image(systemName: store.selectedImportCandidateIds.contains(candidate.id) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(candidate.status == .pending ? Color.accentColor : Color.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(candidate.status != .pending)
+
+                            NavigationLink {
+                                ImportCandidateEditView(candidate: candidate)
+                            } label: {
+                                ImportCandidateRow(candidate: candidate)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle(source.displayName)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    isShowingFileImporter = true
+                } label: {
+                    Label("选择文件", systemImage: "doc.badge.plus")
+                }
+                Button {
+                    isShowingBatchEdit = true
+                } label: {
+                    Label("批量整理", systemImage: "slider.horizontal.3")
+                }
+                .disabled(store.selectedImportCandidateIds.isEmpty)
+            }
+            ToolbarItemGroup(placement: .bottomBar) {
+                Button {
+                    selectAllPending()
+                } label: {
+                    Label("全选", systemImage: "checkmark.circle")
+                }
+                .disabled(pendingCandidates.isEmpty)
+
+                Button(role: .destructive) {
+                    _ = store.ignoreSelectedImportCandidates()
+                } label: {
+                    Label("忽略", systemImage: "eye.slash")
+                }
+                .disabled(store.selectedImportCandidateIds.isEmpty)
+
+                Spacer()
+
+                Button {
+                    if store.confirmSelectedImportCandidates() {
+                        dismiss()
+                    }
+                } label: {
+                    Label("确认进入流水", systemImage: "checkmark")
+                }
+                .disabled(store.selectedImportCandidateIds.isEmpty)
+            }
+        }
+        .fileImporter(
+            isPresented: $isShowingFileImporter,
+            allowedContentTypes: importContentTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            handleFileImport(result)
+        }
+        .sheet(isPresented: $isShowingBatchEdit) {
+            ImportBatchEditView(selectedIds: store.selectedImportCandidateIds)
+        }
+        .onAppear {
+            if store.activeImportSource != source {
+                store.prepareImport(source: source)
+            }
+        }
+    }
+
+    private var pendingCandidates: [ImportCandidateRecord] {
+        store.importCandidates.filter { $0.status == .pending }
+    }
+
+    private var ignoredCandidates: [ImportCandidateRecord] {
+        store.importCandidates.filter { $0.status == .ignored }
+    }
+
+    private var importContentTypes: [UTType] {
+        [.plainText, .text, UTType(filenameExtension: "csv")].compactMap { $0 }
+    }
+
+    private func toggleSelection(_ id: UUID) {
+        if store.selectedImportCandidateIds.contains(id) {
+            store.selectedImportCandidateIds.remove(id)
+        } else {
+            store.selectedImportCandidateIds.insert(id)
+        }
+    }
+
+    private func selectAllPending() {
+        store.selectedImportCandidateIds = Set(pendingCandidates.map(\.id))
+    }
+
+    private func handleFileImport(_ result: Result<[URL], Error>) {
+        do {
+            guard let url = try result.get().first else { return }
+            let didStartAccessing = url.startAccessingSecurityScopedResource()
+            defer {
+                if didStartAccessing {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+            let contents = try readImportText(from: url)
+            _ = store.createImportBatch(source: source, fileName: url.lastPathComponent, contents: contents)
+        } catch {
+            store.lastError = error.localizedDescription
+        }
+    }
+}
+
+struct ImportCandidateRow: View {
+    let candidate: ImportCandidateRecord
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(candidate.accountMonth)
+                    .font(.headline)
+                Spacer()
+                Text(candidate.amount.mingZhangAmountText)
+                    .font(.headline)
+            }
+            Text(candidate.note ?? "无备注")
+                .foregroundStyle(.primary)
+            Text("\(candidate.paymentMethodName ?? "未设置") / \(candidate.paymentTypeName ?? "未设置") / \(candidate.paymentDetailName ?? "未设置")")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("\(candidate.status.displayName) / 原始第 \(candidate.rawLineNumber) 行")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct ImportCandidateEditView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
+    let candidate: ImportCandidateRecord
+    @State private var accountMonth: String
+    @State private var paymentMethodName: String
+    @State private var paymentTypeName: String
+    @State private var paymentDetailName: String
+    @State private var note: String
+
+    init(candidate: ImportCandidateRecord) {
+        self.candidate = candidate
+        _accountMonth = State(initialValue: candidate.accountMonth)
+        _paymentMethodName = State(initialValue: candidate.paymentMethodName ?? "待补真实账户")
+        _paymentTypeName = State(initialValue: candidate.paymentTypeName ?? "")
+        _paymentDetailName = State(initialValue: candidate.paymentDetailName ?? "")
+        _note = State(initialValue: candidate.note ?? "")
+    }
+
+    var body: some View {
+        Form {
+            Section("候选") {
+                TextField("账月", text: $accountMonth)
+                    .textInputAutocapitalization(.never)
+                Picker("收付手段", selection: $paymentMethodName) {
+                    ForEach(paymentMethodOptions, id: \.self) { name in
+                        Text(name).tag(name)
+                    }
+                }
+                Picker("收付类型", selection: $paymentTypeName) {
+                    Text("未选择").tag("")
+                    ForEach(store.types) { type in
+                        Text(type.name).tag(type.name)
+                    }
+                }
+                Picker("类型明细", selection: $paymentDetailName) {
+                    Text("未选择").tag("")
+                    ForEach(availableDetails) { detail in
+                        Text(detail.name).tag(detail.name)
+                    }
+                }
+                TextField("备注", text: $note, axis: .vertical)
+            }
+
+            Section("原始") {
+                LabeledContent("行号", value: "\(candidate.rawLineNumber)")
+                if let transactionId = candidate.rawTransactionId {
+                    LabeledContent("交易号", value: transactionId)
+                }
+            }
+        }
+        .navigationTitle("整理候选")
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("保存") {
+                    if store.updateImportCandidate(id: candidate.id, changes: changes) {
+                        dismiss()
+                    }
+                }
+                .disabled(candidate.status != .pending)
+            }
+        }
+        .onChange(of: paymentTypeName) {
+            if !availableDetails.contains(where: { $0.name == paymentDetailName }) {
+                paymentDetailName = ""
+            }
+        }
+    }
+
+    private var paymentMethodOptions: [String] {
+        var names = store.methods.map(\.name)
+        if !paymentMethodName.isEmpty, !names.contains(paymentMethodName) {
+            names.insert(paymentMethodName, at: 0)
+        }
+        return names
+    }
+
+    private var availableDetails: [PaymentDetail] {
+        guard let typeId = store.types.first(where: { $0.name == paymentTypeName })?.id else {
+            return []
+        }
+        return store.details.filter { $0.paymentTypeId == typeId }
+    }
+
+    private var changes: ImportCandidateChanges {
+        ImportCandidateChanges(
+            accountMonth: accountMonth,
+            paymentMethodName: paymentMethodName,
+            paymentTypeName: paymentTypeName.isEmpty ? nil : paymentTypeName,
+            paymentDetailName: paymentDetailName.isEmpty ? nil : paymentDetailName,
+            note: note
+        )
+    }
+}
+
+struct ImportBatchEditView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
+    let selectedIds: Set<UUID>
+    @State private var accountMonth = ""
+    @State private var paymentMethodName = ""
+    @State private var paymentTypeName = ""
+    @State private var paymentDetailName = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("批量整理") {
+                    TextField("账月", text: $accountMonth)
+                        .textInputAutocapitalization(.never)
+                    Picker("收付手段", selection: $paymentMethodName) {
+                        Text("不修改").tag("")
+                        ForEach(store.methods) { method in
+                            Text(method.name).tag(method.name)
+                        }
+                    }
+                    Picker("收付类型", selection: $paymentTypeName) {
+                        Text("不修改").tag("")
+                        ForEach(store.types) { type in
+                            Text(type.name).tag(type.name)
+                        }
+                    }
+                    Picker("类型明细", selection: $paymentDetailName) {
+                        Text("不修改").tag("")
+                        ForEach(availableDetails) { detail in
+                            Text(detail.name).tag(detail.name)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("批量整理")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("应用") {
+                        if store.batchUpdateImportCandidates(ids: selectedIds, changes: changes) {
+                            dismiss()
+                        }
+                    }
+                }
+            }
+            .onChange(of: paymentTypeName) {
+                if !availableDetails.contains(where: { $0.name == paymentDetailName }) {
+                    paymentDetailName = ""
+                }
+            }
+        }
+    }
+
+    private var availableDetails: [PaymentDetail] {
+        guard let typeId = store.types.first(where: { $0.name == paymentTypeName })?.id else {
+            return []
+        }
+        return store.details.filter { $0.paymentTypeId == typeId }
+    }
+
+    private var changes: ImportCandidateChanges {
+        ImportCandidateChanges(
+            accountMonth: accountMonth.isEmpty ? nil : accountMonth,
+            paymentMethodName: paymentMethodName.isEmpty ? nil : paymentMethodName,
+            paymentTypeName: paymentTypeName.isEmpty ? nil : paymentTypeName,
+            paymentDetailName: paymentDetailName.isEmpty ? nil : paymentDetailName
+        )
+    }
+}
+
 struct JournalFormView: View {
     enum Mode: Equatable {
         case create
@@ -393,10 +791,10 @@ struct JournalFormView: View {
 
     var body: some View {
         Form {
-                Section("账目") {
-                    TextField("账月", text: $input.accountMonth)
-                        .textInputAutocapitalization(.never)
-                    DatePicker("时间", selection: $input.occurredAt)
+            Section("账目") {
+                TextField("账月", text: $input.accountMonth)
+                    .textInputAutocapitalization(.never)
+                DatePicker("时间", selection: $input.occurredAt)
                 Picker("收付手段", selection: $input.paymentMethodName) {
                     ForEach(store.methods) { method in
                         Text(method.name).tag(method.name)
@@ -414,8 +812,12 @@ struct JournalFormView: View {
                             Text(detail.name).tag(detail.name)
                         }
                     }
-                    TextField("备注", text: $input.note, axis: .vertical)
-                }
+                TextField("备注", text: $input.note, axis: .vertical)
+            }
+
+            if case .edit(let record) = mode, record.recordSource == .import {
+                ImportTraceSection(record: record)
+            }
 
             if case .edit = mode, isEditableRecord {
                 Section {
@@ -496,6 +898,30 @@ struct JournalFormView: View {
     private func normalizeDetailSelection() {
         guard !availableDetails.contains(where: { $0.name == input.paymentDetailName }) else { return }
         input.paymentDetailName = availableDetails.first?.name ?? ""
+    }
+}
+
+struct ImportTraceSection: View {
+    @EnvironmentObject private var store: LedgerStore
+    let record: JournalRecord
+    @State private var trace: ImportTrace?
+
+    var body: some View {
+        Section("导入来源") {
+            if let trace {
+                LabeledContent("来源", value: trace.batch.source.displayName)
+                LabeledContent("文件", value: trace.batch.fileName ?? "未命名")
+                LabeledContent("原始行号", value: "\(trace.candidate.rawLineNumber)")
+                if let transactionId = trace.candidate.rawTransactionId {
+                    LabeledContent("交易号", value: transactionId)
+                }
+            } else {
+                ContentUnavailableView("暂无来源", systemImage: "tray")
+            }
+        }
+        .onAppear {
+            trace = store.loadImportTrace(recordId: record.id)
+        }
     }
 }
 
@@ -822,6 +1248,17 @@ struct SummaryRow: View {
     }
 }
 
+private func readImportText(from url: URL) throws -> String {
+    let data = try Data(contentsOf: url)
+    let encodings: [String.Encoding] = [.utf8, .unicode, .utf16, .gb18030]
+    for encoding in encodings {
+        if let value = String(data: data, encoding: encoding) {
+            return value
+        }
+    }
+    throw MingZhangError.validation("无法读取账单文件编码")
+}
+
 private extension Decimal {
     var mingZhangAmountText: String {
         let number = NSDecimalNumber(decimal: self)
@@ -841,5 +1278,43 @@ private extension RecordSource {
         case .engine:
             return "引擎"
         }
+    }
+}
+
+private extension ImportCandidateStatus {
+    var displayName: String {
+        switch self {
+        case .pending:
+            return "待确认"
+        case .ignored:
+            return "已忽略"
+        case .confirmed:
+            return "已入账"
+        }
+    }
+}
+
+private extension ImportIssueCode {
+    var displayName: String {
+        switch self {
+        case .invalidAmount:
+            return "金额异常"
+        case .invalidDate:
+            return "时间异常"
+        case .unknownFields:
+            return "字段异常"
+        case .duplicate:
+            return "重复记录"
+        case .unsupportedDirection:
+            return "非收支交易"
+        }
+    }
+}
+
+private extension String.Encoding {
+    static var gb18030: String.Encoding {
+        String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+        ))
     }
 }
