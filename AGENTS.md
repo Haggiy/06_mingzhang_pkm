@@ -74,6 +74,7 @@ YYYY-MM-DD-topic.md
 | 实时存量-流量闭环引擎 | `docs/specs/stock-flow-engine-spec.md` |
 | 收付手段、类型、语义标签与设置边界 | `docs/specs/settings-and-semantics-spec.md` |
 | 支付宝/微信导入整理 | `docs/specs/import-alipay-wechat-spec.md` |
+| 导入智能分类 ML 设计 | `docs/plans/2026-05-12-import-ml-classification-design.md` |
 | 基金投资明细账与平均成本法 | `docs/specs/investment-ledger-spec.md` |
 | 开放问题追踪 | `docs/research/open-questions.md` |
 
