@@ -317,6 +317,54 @@ final class P1ImportFlowTests: XCTestCase {
         XCTAssertEqual(Set(result.candidates.map(\.rawFingerprint)).count, 2)
     }
 
+    func testZeroAndNullAmountsStillCreateImportCandidates() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let alipay = try useCases.createImportBatch(
+            source: .alipay,
+            fileName: "alipay-zero-null.csv",
+            contents: """
+            -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+            交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+            2026-04-15 09:00:00,转账,朋友,/,零金额,不计收支,0.00,余额,交易成功,ALIPAY-ZERO-001\t,\t,,
+            2026-04-15 10:00:00,转账,朋友,/,空金额,不计收支,,余额,交易成功,ALIPAY-NULL-001\t,\t,,
+            2026-04-15 11:00:00,转账,朋友,/,斜杠金额,不计收支,/,余额,交易成功,ALIPAY-NULL-002\t,\t,,
+            """
+        )
+        let wechat = try useCases.createImportBatch(
+            source: .wechat,
+            fileName: "wechat-zero-null.csv",
+            contents: """
+            微信支付账单明细,,,,,,,,
+            ----------------------微信支付账单明细列表--------------------,,,,,,,,
+            交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注
+            2026-04-15 12:00:00,商户消费,商户,零金额,支出,¥0.00,零钱,支付成功,WECHAT-ZERO-001\t,\t,/
+            2026-04-15 13:00:00,商户消费,商户,null金额,支出,null,零钱,支付成功,WECHAT-NULL-001\t,\t,/
+            """
+        )
+
+        XCTAssertEqual(alipay.candidates.count, 3)
+        XCTAssertEqual(wechat.candidates.count, 2)
+        XCTAssertFalse((alipay.issues + wechat.issues).contains { $0.code == .invalidAmount })
+        XCTAssertTrue((alipay.candidates + wechat.candidates).allSatisfy { $0.amount == Decimal(0) })
+
+        let updated = try useCases.updateImportCandidate(
+            id: try XCTUnwrap(alipay.candidates.first).id,
+            changes: ImportCandidateChanges(
+                amount: Decimal(0),
+                paymentMethodName: "广发卡",
+                paymentTypeName: "生活必要开支",
+                paymentDetailName: "伙食费"
+            )
+        )
+        XCTAssertEqual(updated.amount, Decimal(0))
+        XCTAssertThrowsError(try useCases.confirmImportCandidates(ids: [updated.id])) { error in
+            XCTAssertEqual(error as? MingZhangError, .validation("金额不能为 0"))
+        }
+    }
+
     func testDeleteImportedRecordAllowsSameRawLineToBeImportedAgain() throws {
         let database = try LedgerDatabase.inMemory()
         let useCases = LedgerUseCases(database: database)

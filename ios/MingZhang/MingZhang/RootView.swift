@@ -694,9 +694,6 @@ struct ImportCandidateEditView: View {
         guard let amount = Decimal(string: trimmedAmount, locale: Locale(identifier: "en_US_POSIX")) else {
             throw MingZhangError.validation("金额必须是有效数字")
         }
-        guard amount != Decimal(0) else {
-            throw MingZhangError.validation("金额不能为 0")
-        }
         return ImportCandidateChanges(
             accountMonth: accountMonth,
             amount: amount,

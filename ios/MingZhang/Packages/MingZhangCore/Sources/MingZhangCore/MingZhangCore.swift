@@ -1617,9 +1617,6 @@ private func applyImportCandidateChanges(
         candidate.accountMonth = accountMonth
     }
     if let amount = changes.amount {
-        guard amount != Decimal(0) else {
-            throw MingZhangError.validation("金额不能为 0")
-        }
         candidate.amount = amount
     }
     if let paymentMethodName = changes.paymentMethodName {
@@ -2162,7 +2159,10 @@ private func parseImportAmount(_ value: String) -> Decimal? {
         .replacingOccurrences(of: "￥", with: "")
         .replacingOccurrences(of: ",", with: "")
         .replacingOccurrences(of: "元", with: "")
-    guard let amount = Decimal(string: cleaned, locale: Locale(identifier: "en_US_POSIX")), amount != Decimal(0) else {
+    if cleaned.isEmpty || cleaned == "/" || cleaned.lowercased() == "null" {
+        return Decimal(0)
+    }
+    guard let amount = Decimal(string: cleaned, locale: Locale(identifier: "en_US_POSIX")) else {
         return nil
     }
     return amount
