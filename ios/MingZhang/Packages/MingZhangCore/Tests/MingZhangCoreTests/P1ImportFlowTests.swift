@@ -360,9 +360,9 @@ final class P1ImportFlowTests: XCTestCase {
             )
         )
         XCTAssertEqual(updated.amount, Decimal(0))
-        XCTAssertThrowsError(try useCases.confirmImportCandidates(ids: [updated.id])) { error in
-            XCTAssertEqual(error as? MingZhangError, .validation("金额不能为 0"))
-        }
+        let record = try XCTUnwrap(try useCases.confirmImportCandidates(ids: [updated.id]).first)
+        XCTAssertEqual(record.amount, Decimal(0))
+        XCTAssertEqual(record.sourceImportCandidateId, updated.id)
     }
 
     func testDeleteImportedRecordAllowsSameRawLineToBeImportedAgain() throws {

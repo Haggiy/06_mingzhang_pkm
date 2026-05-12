@@ -1748,9 +1748,6 @@ private func validateRecordFields(
     paymentDetail: PaymentDetail
 ) throws {
     try validateAccountMonth(accountMonth)
-    guard amount != Decimal(0) else {
-        throw MingZhangError.validation("金额不能为 0")
-    }
     guard paymentDetail.paymentTypeId == paymentType.id else {
         throw MingZhangError.validation("类型明细必须归属于当前收付类型")
     }
