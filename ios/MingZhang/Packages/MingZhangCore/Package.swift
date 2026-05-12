@@ -26,7 +26,8 @@ let package = Package(
         ),
         .testTarget(
             name: "MingZhangCoreTests",
-            dependencies: ["MingZhangCore"]
+            dependencies: ["MingZhangCore"],
+            exclude: ["Fixtures"]
         )
     ]
 )
