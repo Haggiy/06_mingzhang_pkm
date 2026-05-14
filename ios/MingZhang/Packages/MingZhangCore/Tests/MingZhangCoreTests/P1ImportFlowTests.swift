@@ -360,6 +360,225 @@ final class P1ImportFlowTests: XCTestCase {
         XCTAssertEqual(secondCandidate.paymentDetailName, "饮食游乐费")
     }
 
+    func testImportMemoryLeavesClassificationEmptyWhenMerchantMatchesButProductDiffers() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let firstContents = """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-15 12:30:45,餐饮美食,商品边界店,/,午餐套餐,支出,100.00,广发卡,交易成功,ALIPAY-MEMORY-PRODUCT-001\t,\t,,
+        """
+        let firstBatch = try useCases.createImportBatch(source: .alipay, fileName: "memory-product-1.csv", contents: firstContents)
+        let firstCandidate = try XCTUnwrap(firstBatch.candidates.first)
+        _ = try useCases.updateImportCandidate(
+            id: firstCandidate.id,
+            changes: ImportCandidateChanges(
+                paymentMethodName: "广发卡",
+                paymentTypeName: "生活必要开支",
+                paymentDetailName: "伙食费"
+            )
+        )
+        _ = try useCases.confirmImportCandidates(ids: [firstCandidate.id])
+
+        let secondContents = """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-16 12:30:45,餐饮美食,商品边界店,/,晚餐套餐,支出,80.00,广发卡,交易成功,ALIPAY-MEMORY-PRODUCT-002\t,\t,,
+        """
+        let secondBatch = try useCases.createImportBatch(source: .alipay, fileName: "memory-product-2.csv", contents: secondContents)
+        let secondCandidate = try XCTUnwrap(secondBatch.candidates.first)
+
+        XCTAssertNil(secondCandidate.paymentTypeName)
+        XCTAssertNil(secondCandidate.paymentDetailName)
+        XCTAssertNil(secondCandidate.paymentTypeId)
+        XCTAssertNil(secondCandidate.paymentDetailId)
+    }
+
+    func testImportMemoryLeavesClassificationEmptyWhenProductMatchesButMerchantDiffers() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let firstContents = """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-15 12:30:45,餐饮美食,商户边界一店,/,固定套餐,支出,100.00,广发卡,交易成功,ALIPAY-MEMORY-MERCHANT-001\t,\t,,
+        """
+        let firstBatch = try useCases.createImportBatch(source: .alipay, fileName: "memory-merchant-1.csv", contents: firstContents)
+        let firstCandidate = try XCTUnwrap(firstBatch.candidates.first)
+        _ = try useCases.updateImportCandidate(
+            id: firstCandidate.id,
+            changes: ImportCandidateChanges(
+                paymentMethodName: "广发卡",
+                paymentTypeName: "生活必要开支",
+                paymentDetailName: "伙食费"
+            )
+        )
+        _ = try useCases.confirmImportCandidates(ids: [firstCandidate.id])
+
+        let secondContents = """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-16 12:30:45,餐饮美食,商户边界二店,/,固定套餐,支出,80.00,广发卡,交易成功,ALIPAY-MEMORY-MERCHANT-002\t,\t,,
+        """
+        let secondBatch = try useCases.createImportBatch(source: .alipay, fileName: "memory-merchant-2.csv", contents: secondContents)
+        let secondCandidate = try XCTUnwrap(secondBatch.candidates.first)
+
+        XCTAssertNil(secondCandidate.paymentTypeName)
+        XCTAssertNil(secondCandidate.paymentDetailName)
+        XCTAssertNil(secondCandidate.paymentTypeId)
+        XCTAssertNil(secondCandidate.paymentDetailId)
+    }
+
+    func testImportMemoryDoesNotPrefillAcrossAlipayAndWechatSources() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let alipayContents = """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-15 12:30:45,餐饮美食,来源隔离店,/,通用套餐,支出,100.00,广发卡,交易成功,ALIPAY-MEMORY-SOURCE-001\t,\t,,
+        """
+        let alipayBatch = try useCases.createImportBatch(source: .alipay, fileName: "memory-source-alipay.csv", contents: alipayContents)
+        let alipayCandidate = try XCTUnwrap(alipayBatch.candidates.first)
+        _ = try useCases.updateImportCandidate(
+            id: alipayCandidate.id,
+            changes: ImportCandidateChanges(
+                paymentMethodName: "广发卡",
+                paymentTypeName: "生活必要开支",
+                paymentDetailName: "伙食费"
+            )
+        )
+        _ = try useCases.confirmImportCandidates(ids: [alipayCandidate.id])
+
+        let wechatContents = """
+        微信支付账单明细,,,,,,,,
+        ----------------------微信支付账单明细列表--------------------,,,,,,,,
+        交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注
+        2026-04-16 12:30:45,商户消费,来源隔离店,通用套餐,支出,¥80.00,零钱,支付成功,WECHAT-MEMORY-SOURCE-001\t,\t,/
+        """
+        let wechatBatch = try useCases.createImportBatch(source: .wechat, fileName: "memory-source-wechat.csv", contents: wechatContents)
+        let wechatCandidate = try XCTUnwrap(wechatBatch.candidates.first)
+
+        XCTAssertNil(wechatCandidate.paymentTypeName)
+        XCTAssertNil(wechatCandidate.paymentDetailName)
+        XCTAssertNil(wechatCandidate.paymentTypeId)
+        XCTAssertNil(wechatCandidate.paymentDetailId)
+    }
+
+    func testImportMemoryLeavesClassificationEmptyWhenMerchantOrProductIsBlankOrSlash() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let blankMerchantContents = """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-15 12:30:45,餐饮美食,/,/,固定套餐,支出,100.00,广发卡,交易成功,ALIPAY-MEMORY-BLANK-001\t,\t,,
+        2026-04-16 12:30:45,餐饮美食,/,/,固定套餐,支出,80.00,广发卡,交易成功,ALIPAY-MEMORY-BLANK-002\t,\t,,
+        """
+        let blankMerchantFirstBatch = try useCases.createImportBatch(source: .alipay, fileName: "memory-blank-merchant-1.csv", contents: blankMerchantContents)
+        let blankMerchantFirstCandidate = try XCTUnwrap(blankMerchantFirstBatch.candidates.first { $0.rawTransactionId == "ALIPAY-MEMORY-BLANK-001" })
+        _ = try useCases.updateImportCandidate(
+            id: blankMerchantFirstCandidate.id,
+            changes: ImportCandidateChanges(
+                paymentMethodName: "广发卡",
+                paymentTypeName: "生活必要开支",
+                paymentDetailName: "伙食费"
+            )
+        )
+        _ = try useCases.confirmImportCandidates(ids: [blankMerchantFirstCandidate.id])
+
+        let blankMerchantSecondBatch = try useCases.createImportBatch(
+            source: .alipay,
+            fileName: "memory-blank-merchant-2.csv",
+            contents: """
+            -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+            交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+            2026-04-17 12:30:45,餐饮美食,/,/,固定套餐,支出,35.00,广发卡,交易成功,ALIPAY-MEMORY-BLANK-003\t,\t,,
+            """
+        )
+        let blankMerchantCandidate = try XCTUnwrap(blankMerchantSecondBatch.candidates.first)
+
+        let slashProductContents = """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-15 12:30:45,餐饮美食,斜杠商品店,/,/,支出,100.00,广发卡,交易成功,ALIPAY-MEMORY-SLASH-PRODUCT-001\t,\t,,
+        """
+        let slashProductFirstBatch = try useCases.createImportBatch(source: .alipay, fileName: "memory-slash-product-1.csv", contents: slashProductContents)
+        let slashProductFirstCandidate = try XCTUnwrap(slashProductFirstBatch.candidates.first)
+        _ = try useCases.updateImportCandidate(
+            id: slashProductFirstCandidate.id,
+            changes: ImportCandidateChanges(
+                paymentMethodName: "广发卡",
+                paymentTypeName: "生活必要开支",
+                paymentDetailName: "伙食费"
+            )
+        )
+        _ = try useCases.confirmImportCandidates(ids: [slashProductFirstCandidate.id])
+
+        let slashProductSecondBatch = try useCases.createImportBatch(
+            source: .alipay,
+            fileName: "memory-slash-product-2.csv",
+            contents: """
+            -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+            交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+            2026-04-16 12:30:45,餐饮美食,斜杠商品店,/,/,支出,80.00,广发卡,交易成功,ALIPAY-MEMORY-SLASH-PRODUCT-002\t,\t,,
+            """
+        )
+        let slashProductCandidate = try XCTUnwrap(slashProductSecondBatch.candidates.first)
+
+        XCTAssertNil(blankMerchantCandidate.paymentTypeName)
+        XCTAssertNil(blankMerchantCandidate.paymentDetailName)
+        XCTAssertNil(blankMerchantCandidate.paymentTypeId)
+        XCTAssertNil(blankMerchantCandidate.paymentDetailId)
+        XCTAssertNil(slashProductCandidate.paymentTypeName)
+        XCTAssertNil(slashProductCandidate.paymentDetailName)
+        XCTAssertNil(slashProductCandidate.paymentTypeId)
+        XCTAssertNil(slashProductCandidate.paymentDetailId)
+    }
+
+    func testImportMemoryDoesNotUseDeletedImportedJournalRecord() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let firstContents = """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-15 12:30:45,餐饮美食,删除记忆店,/,午餐套餐,支出,100.00,广发卡,交易成功,ALIPAY-MEMORY-DELETE-001\t,\t,,
+        """
+        let firstBatch = try useCases.createImportBatch(source: .alipay, fileName: "memory-delete-1.csv", contents: firstContents)
+        let firstCandidate = try XCTUnwrap(firstBatch.candidates.first)
+        _ = try useCases.updateImportCandidate(
+            id: firstCandidate.id,
+            changes: ImportCandidateChanges(
+                paymentMethodName: "广发卡",
+                paymentTypeName: "生活必要开支",
+                paymentDetailName: "伙食费"
+            )
+        )
+        let record = try XCTUnwrap(try useCases.confirmImportCandidates(ids: [firstCandidate.id]).first)
+
+        try useCases.deleteJournalRecord(id: record.id)
+
+        let secondContents = """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-16 12:30:45,餐饮美食,删除记忆店,/,午餐套餐,支出,80.00,广发卡,交易成功,ALIPAY-MEMORY-DELETE-002\t,\t,,
+        """
+        let secondBatch = try useCases.createImportBatch(source: .alipay, fileName: "memory-delete-2.csv", contents: secondContents)
+        let secondCandidate = try XCTUnwrap(secondBatch.candidates.first)
+
+        XCTAssertNil(secondCandidate.paymentTypeName)
+        XCTAssertNil(secondCandidate.paymentDetailName)
+        XCTAssertNil(secondCandidate.paymentTypeId)
+        XCTAssertNil(secondCandidate.paymentDetailId)
+    }
+
     func testImportRecordCanTraceBackToBatchAndRawCandidate() throws {
         let database = try LedgerDatabase.inMemory()
         let useCases = LedgerUseCases(database: database)
