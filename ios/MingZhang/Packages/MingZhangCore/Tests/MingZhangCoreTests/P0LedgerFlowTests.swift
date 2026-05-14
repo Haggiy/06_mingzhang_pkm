@@ -15,8 +15,9 @@ final class P0LedgerFlowTests: XCTestCase {
         let types = try useCases.queryPaymentTypes()
         let details = try useCases.queryPaymentDetails()
 
-        XCTAssertEqual(methods.map(\.name).sorted(), ["广发卡", "电子钱包余额", "账务处理"])
+        XCTAssertEqual(methods.map(\.name).sorted(), ["广发卡", "待补真实账户", "电子钱包余额", "账务处理"])
         XCTAssertEqual(methods.first { $0.name == "广发卡" }?.methodType, .liability)
+        XCTAssertEqual(methods.first { $0.name == "待补真实账户" }?.methodType, .pendingRealAccount)
         XCTAssertEqual(methods.first { $0.name == "电子钱包余额" }?.methodType, .asset)
         XCTAssertEqual(types.first { $0.name == "生活必要开支" }?.element, .expense)
         XCTAssertEqual(details.first { $0.name == "伙食费" }?.paymentTypeId, types.first { $0.name == "生活必要开支" }?.id)
@@ -361,12 +362,6 @@ final class P0LedgerFlowTests: XCTestCase {
             XCTAssertEqual(error as? MingZhangError, .validation("账月必须是合法的 YYYY-MM"))
         }
 
-        XCTAssertThrowsError(try useCases.createManualRecord(
-            input: try sampleInput(amount: Decimal(0))
-        )) { error in
-            XCTAssertEqual(error as? MingZhangError, .validation("金额不能为 0"))
-        }
-
         let record = try useCases.createManualRecord(input: sampleInput(amount: Decimal(100)))
         try insertPaymentTypeAndDetail(database, typeName: "交通费", detailName: "公交")
 
@@ -376,6 +371,26 @@ final class P0LedgerFlowTests: XCTestCase {
         )) { error in
             XCTAssertEqual(error as? MingZhangError, .validation("类型明细必须归属于当前收付类型"))
         }
+    }
+
+    func testZeroAmountManualRecordsCanBeCreatedAndUpdated() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let created = try useCases.createManualRecord(input: sampleInput(amount: Decimal(0)))
+        XCTAssertEqual(created.amount, Decimal(0))
+        XCTAssertEqual(
+            try useCases.queryJournalRecords(filter: JournalRecordFilter(accountMonths: ["2026-04"])).map(\.id),
+            [created.id]
+        )
+        XCTAssertEqual(try useCases.queryHomeSummary(accountMonth: "2026-04").expenseTotal, Decimal(0))
+
+        let nonZero = try useCases.createManualRecord(input: sampleInput(amount: Decimal(100)))
+        let updated = try useCases.updateJournalRecord(id: nonZero.id, changes: JournalRecordChanges(amount: Decimal(0)))
+
+        XCTAssertEqual(updated.amount, Decimal(0))
+        XCTAssertEqual(try useCases.queryHomeSummary(accountMonth: "2026-04").expenseTotal, Decimal(0))
     }
 
     func testEngineAndInvestmentFeedRecordsAreNotEditableOrDeletable() throws {

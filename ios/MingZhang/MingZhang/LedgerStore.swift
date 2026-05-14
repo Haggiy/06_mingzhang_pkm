@@ -14,6 +14,11 @@ final class LedgerStore: ObservableObject {
     @Published private(set) var homeSummary = HomeSummary(incomeTotal: 0, expenseTotal: 0, balance: 0, recentRecordIds: [])
     @Published private(set) var balanceSummary = BalanceSummary(cashBalance: 0, liabilityItems: [])
     @Published private(set) var statisticsSummary = StatisticsSummary(expenseByType: [], sourceRecordIds: [])
+    @Published private(set) var activeImportSource: ImportSource?
+    @Published private(set) var activeImportBatch: ImportBatch?
+    @Published private(set) var importCandidates: [ImportCandidateRecord] = []
+    @Published private(set) var importIssues: [ImportIssue] = []
+    @Published var selectedImportCandidateIds: Set<UUID> = []
     @Published var lastError: String?
 
     private var useCases: LedgerUseCases?
@@ -90,6 +95,111 @@ final class LedgerStore: ObservableObject {
         return try useCases.queryJournalRecords(recordIds: recordIds)
     }
 
+    func prepareImport(source: ImportSource) {
+        activeImportSource = source
+        activeImportBatch = nil
+        importCandidates = []
+        importIssues = []
+        selectedImportCandidateIds = []
+        lastError = nil
+    }
+
+    func createImportBatch(source: ImportSource, fileName: String?, contents: String) -> Bool {
+        do {
+            guard let useCases else { return false }
+            let result = try useCases.createImportBatch(source: source, fileName: fileName, contents: contents)
+            applyImportResult(result, source: source)
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func createImportBatch(source: ImportSource, fileName: String?, data: Data) -> Bool {
+        do {
+            guard let useCases else { return false }
+            let result = try useCases.createImportBatch(source: source, fileName: fileName, data: data)
+            applyImportResult(result, source: source)
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func updateImportCandidate(id: UUID, changes: ImportCandidateChanges) -> Bool {
+        do {
+            guard let useCases else { return false }
+            let updated = try useCases.updateImportCandidate(id: id, changes: changes)
+            replaceImportCandidates(with: [updated])
+            lastError = nil
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func batchUpdateImportCandidates(ids: Set<UUID>, changes: ImportCandidateChanges) -> Bool {
+        do {
+            guard let useCases else { return false }
+            let updated = try useCases.batchUpdateImportCandidates(ids: Array(ids), changes: changes)
+            replaceImportCandidates(with: updated)
+            lastError = nil
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func confirmSelectedImportCandidates() -> Bool {
+        do {
+            guard let useCases else { return false }
+            let records = try useCases.confirmImportCandidates(ids: Array(selectedImportCandidateIds))
+            if let month = records.first?.accountMonth {
+                accountMonth = month
+            }
+            if let batch = activeImportBatch {
+                importCandidates = try useCases.queryImportCandidates(batchId: batch.id)
+                activeImportBatch = try useCases.queryImportBatches().first { $0.id == batch.id }
+            }
+            selectedImportCandidateIds = []
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func ignoreSelectedImportCandidates() -> Bool {
+        do {
+            guard let useCases else { return false }
+            let ignored = try useCases.ignoreImportCandidates(ids: Array(selectedImportCandidateIds))
+            replaceImportCandidates(with: ignored)
+            selectedImportCandidateIds = []
+            lastError = nil
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func loadImportTrace(recordId: UUID) -> ImportTrace? {
+        do {
+            guard let useCases else { return nil }
+            let trace = try useCases.getImportTrace(recordId: recordId)
+            lastError = nil
+            return trace
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
+    }
+
     func createRecord(input: JournalFormInput) -> Bool {
         do {
             guard let useCases else { return false }
@@ -140,6 +250,26 @@ final class LedgerStore: ObservableObject {
         )
         return directory.appendingPathComponent("MingZhang.sqlite")
     }
+
+    private func replaceImportCandidates(with updated: [ImportCandidateRecord]) {
+        var candidatesById = Dictionary(uniqueKeysWithValues: importCandidates.map { ($0.id, $0) })
+        for candidate in updated {
+            candidatesById[candidate.id] = candidate
+            if candidate.status != .pending {
+                selectedImportCandidateIds.remove(candidate.id)
+            }
+        }
+        importCandidates = candidatesById.values.sorted { ($0.occurredAt, $0.rawLineNumber) < ($1.occurredAt, $1.rawLineNumber) }
+    }
+
+    private func applyImportResult(_ result: CreateImportBatchResult, source: ImportSource) {
+        activeImportSource = source
+        activeImportBatch = result.batch
+        importCandidates = result.candidates
+        importIssues = result.issues
+        selectedImportCandidateIds = []
+        lastError = nil
+    }
 }
 
 struct JournalFormInput: Equatable {
@@ -158,9 +288,6 @@ struct JournalFormInput: Equatable {
         }
         guard let amount = Decimal(string: trimmed, locale: Locale(identifier: "en_US_POSIX")) else {
             throw MingZhangError.validation("金额必须是有效数字")
-        }
-        guard amount != Decimal(0) else {
-            throw MingZhangError.validation("金额不能为 0")
         }
         return amount
     }

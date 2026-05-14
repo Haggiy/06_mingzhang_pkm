@@ -1,4 +1,8 @@
 import Foundation
+import CryptoKit
+import class CoreXLSX.XLSXFile
+import struct CoreXLSX.Cell
+import struct CoreXLSX.SharedStrings
 import GRDB
 
 public enum MingZhangError: Error, Equatable, LocalizedError {
@@ -115,6 +119,8 @@ public struct JournalRecord: Equatable, Identifiable, Sendable {
     public var engineKey: String?
     public var objectKey: String?
     public var sourceRecordIds: [UUID]
+    public var sourceImportBatchId: UUID?
+    public var sourceImportCandidateId: UUID?
     public var createdAt: Date
     public var updatedAt: Date
 }
@@ -362,6 +368,47 @@ public final class LedgerDatabase: @unchecked Sendable {
                 table.column("updated_at", .text).notNull()
             }
         }
+        migrator.registerMigration("v2_p1_import") { db in
+            try db.alter(table: "journal_records") { table in
+                table.add(column: "source_import_batch_id", .text)
+                table.add(column: "source_import_candidate_id", .text)
+            }
+
+            try db.create(table: "import_batches", ifNotExists: true) { table in
+                table.column("id", .text).primaryKey()
+                table.column("source", .text).notNull().indexed()
+                table.column("file_name", .text)
+                table.column("imported_at", .text).notNull()
+                table.column("status", .text).notNull().indexed()
+                table.column("confirmed_record_count", .integer).notNull()
+            }
+
+            try db.create(table: "import_candidates", ifNotExists: true) { table in
+                table.column("id", .text).primaryKey()
+                table.column("batch_id", .text).notNull().indexed().references("import_batches", onDelete: .cascade)
+                table.column("status", .text).notNull().indexed()
+                table.column("account_month", .text).notNull().indexed()
+                table.column("occurred_at", .text).notNull()
+                table.column("payment_method_id", .text).references("payment_methods", onDelete: .setNull)
+                table.column("payment_method_name", .text)
+                table.column("amount", .text).notNull()
+                table.column("payment_type_id", .text).references("payment_types", onDelete: .setNull)
+                table.column("payment_type_name", .text)
+                table.column("payment_detail_id", .text).references("payment_details", onDelete: .setNull)
+                table.column("payment_detail_name", .text)
+                table.column("note", .text)
+                table.column("raw_line_number", .integer).notNull()
+                table.column("raw_payload", .text).notNull()
+                table.column("raw_transaction_id", .text)
+                table.column("raw_fingerprint", .text).notNull()
+                table.column("created_journal_record_id", .text).references("journal_records", onDelete: .setNull)
+                table.column("created_at", .text).notNull()
+                table.column("updated_at", .text).notNull()
+            }
+
+            try db.create(index: "idx_import_candidates_transaction", on: "import_candidates", columns: ["raw_transaction_id"])
+            try db.create(index: "idx_import_candidates_fingerprint", on: "import_candidates", columns: ["raw_fingerprint"])
+        }
         return migrator
     }
 }
@@ -379,6 +426,7 @@ public final class LedgerUseCases: @unchecked Sendable {
             try insertPaymentMethodIfNeeded(db, name: "电子钱包余额", methodType: .asset, now: now)
             try insertPaymentMethodIfNeeded(db, name: "广发卡", methodType: .liability, now: now)
             try insertPaymentMethodIfNeeded(db, name: "账务处理", methodType: .accounting, now: now)
+            try insertPaymentMethodIfNeeded(db, name: "待补真实账户", methodType: .pendingRealAccount, now: now)
 
             let type = try insertPaymentTypeIfNeeded(db, name: "生活必要开支", element: .expense, now: now)
             try insertPaymentDetailIfNeeded(db, name: "伙食费", paymentTypeId: type.id, now: now)
@@ -412,6 +460,255 @@ public final class LedgerUseCases: @unchecked Sendable {
                 FROM payment_details
                 ORDER BY name
                 """).map(paymentDetail(from:))
+        }
+    }
+
+    public func queryImportBatches() throws -> [ImportBatch] {
+        try database.writer.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT id, source, file_name, imported_at, status, confirmed_record_count
+                FROM import_batches
+                ORDER BY imported_at DESC
+                """).map(importBatch(from:))
+        }
+    }
+
+    public func queryImportCandidates(batchId: UUID) throws -> [ImportCandidateRecord] {
+        try database.writer.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT id, batch_id, status, account_month, occurred_at, payment_method_id,
+                       payment_method_name, amount, payment_type_id, payment_type_name,
+                       payment_detail_id, payment_detail_name, note, raw_line_number,
+                       raw_payload, raw_transaction_id, raw_fingerprint, created_journal_record_id
+                FROM import_candidates
+                WHERE batch_id = ?
+                ORDER BY occurred_at ASC, raw_line_number ASC
+                """, arguments: [batchId.uuidString]).map(importCandidate(from:))
+        }
+    }
+
+    @discardableResult
+    public func createImportBatch(
+        source: ImportSource,
+        fileName: String?,
+        contents: String
+    ) throws -> CreateImportBatchResult {
+        try createImportBatch(source: source, fileName: fileName, parseResult: try parseImportRows(source: source, contents: contents))
+    }
+
+    @discardableResult
+    public func createImportBatch(
+        source: ImportSource,
+        fileName: String?,
+        data: Data
+    ) throws -> CreateImportBatchResult {
+        let parseResult: ImportParseResult
+        if fileName?.lowercased().hasSuffix(".xlsx") == true || data.starts(with: [0x50, 0x4B, 0x03, 0x04]) {
+            parseResult = try parseXLSXImportRows(source: source, data: data)
+        } else {
+            parseResult = try parseImportRows(source: source, contents: try decodeImportText(data))
+        }
+        return try createImportBatch(source: source, fileName: fileName, parseResult: parseResult)
+    }
+
+    private func createImportBatch(
+        source: ImportSource,
+        fileName: String?,
+        parseResult: ImportParseResult
+    ) throws -> CreateImportBatchResult {
+        return try database.writer.write { db in
+            let now = Date()
+            let batch = ImportBatch(
+                id: UUID(),
+                source: source,
+                fileName: fileName,
+                importedAt: now,
+                status: .draft,
+                confirmedRecordCount: 0
+            )
+            try insertImportBatch(db, batch: batch)
+
+            var issues = parseResult.issues
+            var candidates: [ImportCandidateRecord] = []
+            var seenKeys: Set<String> = []
+            for row in parseResult.rows {
+                let duplicateKey = row.rawTransactionId.map { "tx:\($0)" } ?? "fp:\(row.rawFingerprint)"
+                guard !seenKeys.contains(duplicateKey) else {
+                    issues.append(ImportIssue(lineNumber: row.lineNumber, code: .duplicate, message: "重复账单行"))
+                    continue
+                }
+                seenKeys.insert(duplicateKey)
+
+                guard try !importCandidateExists(db, source: source, transactionId: row.rawTransactionId, fingerprint: row.rawFingerprint) else {
+                    issues.append(ImportIssue(lineNumber: row.lineNumber, code: .duplicate, message: "重复导入：\(row.rawTransactionId ?? row.rawFingerprint)"))
+                    continue
+                }
+
+                let method = try resolveImportPaymentMethod(db, source: source, rawName: row.paymentMethodName)
+                let candidate = ImportCandidateRecord(
+                    id: UUID(),
+                    batchId: batch.id,
+                    status: .pending,
+                    accountMonth: row.accountMonth,
+                    occurredAt: row.occurredAt,
+                    paymentMethodId: method.id,
+                    paymentMethodName: method.name,
+                    amount: row.amount,
+                    paymentTypeId: nil,
+                    paymentTypeName: nil,
+                    paymentDetailId: nil,
+                    paymentDetailName: nil,
+                    note: row.note,
+                    rawLineNumber: row.lineNumber,
+                    rawPayload: row.rawPayload,
+                    rawTransactionId: row.rawTransactionId,
+                    rawFingerprint: row.rawFingerprint,
+                    createdJournalRecordId: nil
+                )
+                try insertImportCandidate(db, candidate: candidate, now: now)
+                candidates.append(candidate)
+            }
+
+            return CreateImportBatchResult(batch: batch, candidates: candidates, issues: issues)
+        }
+    }
+
+    @discardableResult
+    public func updateImportCandidate(id: UUID, changes: ImportCandidateChanges) throws -> ImportCandidateRecord {
+        let updated = try database.writer.write { db in
+            var candidate = try requireImportCandidate(db, id: id)
+            try applyImportCandidateChanges(db, candidate: &candidate, changes: changes)
+            try persistImportCandidateUpdate(db, candidate: candidate, updatedAt: Date())
+            return candidate
+        }
+        return updated
+    }
+
+    @discardableResult
+    public func batchUpdateImportCandidates(ids: [UUID], changes: ImportCandidateChanges) throws -> [ImportCandidateRecord] {
+        guard !ids.isEmpty else { return [] }
+        return try database.writer.write { db in
+            let now = Date()
+            var updated: [ImportCandidateRecord] = []
+            for id in ids {
+                var candidate = try requireImportCandidate(db, id: id)
+                try applyImportCandidateChanges(db, candidate: &candidate, changes: changes)
+                try persistImportCandidateUpdate(db, candidate: candidate, updatedAt: now)
+                updated.append(candidate)
+            }
+            return updated.sorted { ($0.occurredAt, $0.rawLineNumber) < ($1.occurredAt, $1.rawLineNumber) }
+        }
+    }
+
+    @discardableResult
+    public func ignoreImportCandidates(ids: [UUID]) throws -> [ImportCandidateRecord] {
+        guard !ids.isEmpty else { return [] }
+        return try database.writer.write { db in
+            let now = Date()
+            var ignored: [ImportCandidateRecord] = []
+            for id in ids {
+                var candidate = try requireImportCandidate(db, id: id)
+                guard candidate.status == .pending else {
+                    throw MingZhangError.validation("只能整理待确认候选记录")
+                }
+                candidate.status = .ignored
+                try persistImportCandidateUpdate(db, candidate: candidate, updatedAt: now)
+                ignored.append(candidate)
+            }
+            return ignored.sorted { ($0.occurredAt, $0.rawLineNumber) < ($1.occurredAt, $1.rawLineNumber) }
+        }
+    }
+
+    @discardableResult
+    public func confirmImportCandidates(ids: [UUID]) throws -> [JournalRecord] {
+        guard !ids.isEmpty else { return [] }
+        let result = try database.writer.write { db in
+            let now = Date()
+            var records: [JournalRecord] = []
+            var affectedMonths: Set<String> = []
+
+            for id in ids {
+                var candidate = try requireImportCandidate(db, id: id)
+                guard candidate.status == .pending else {
+                    throw MingZhangError.validation("只能确认待确认候选记录")
+                }
+                guard let typeId = candidate.paymentTypeId, let detailId = candidate.paymentDetailId else {
+                    throw MingZhangError.validation("确认入账前必须补齐收付类型和类型明细")
+                }
+                let method: PaymentMethod
+                if let paymentMethodId = candidate.paymentMethodId {
+                    method = try requirePaymentMethod(db, id: paymentMethodId)
+                } else {
+                    method = try requirePaymentMethod(db, name: "待补真实账户")
+                }
+                let type = try requirePaymentType(db, id: typeId)
+                let detail = try requirePaymentDetail(db, id: detailId)
+                let recordAmount = candidate.amount
+                try validateRecordFields(
+                    accountMonth: candidate.accountMonth,
+                    amount: recordAmount,
+                    paymentType: type,
+                    paymentDetail: detail
+                )
+
+                let record = JournalRecord(
+                    id: UUID(),
+                    accountMonth: candidate.accountMonth,
+                    occurredAt: candidate.occurredAt,
+                    paymentMethodId: method.id,
+                    paymentMethodName: method.name,
+                    amount: recordAmount,
+                    paymentTypeId: type.id,
+                    paymentTypeName: type.name,
+                    paymentDetailId: detail.id,
+                    paymentDetailName: detail.name,
+                    note: candidate.note,
+                    recordSource: .import,
+                    recordKind: .normal,
+                    carryForwardRole: .none,
+                    engineFamily: nil,
+                    engineKey: nil,
+                    objectKey: nil,
+                    sourceRecordIds: [],
+                    sourceImportBatchId: candidate.batchId,
+                    sourceImportCandidateId: candidate.id,
+                    createdAt: now,
+                    updatedAt: now
+                )
+                try insertJournalRecord(db, record: record)
+
+                candidate.status = .confirmed
+                candidate.createdJournalRecordId = record.id
+                try persistImportCandidateUpdate(db, candidate: candidate, updatedAt: now)
+                try incrementBatchConfirmedCount(db, batchId: candidate.batchId)
+                try markBatchConfirmedIfComplete(db, batchId: candidate.batchId)
+
+                records.append(record)
+                affectedMonths.insert(record.accountMonth)
+            }
+
+            return (records: records.sorted { ($0.occurredAt, $0.createdAt) < ($1.occurredAt, $1.createdAt) }, months: affectedMonths)
+        }
+
+        for month in result.months.sorted() {
+            _ = try recalculateAccountMonth(month)
+        }
+        return result.records
+    }
+
+    public func getImportTrace(recordId: UUID) throws -> ImportTrace? {
+        try database.writer.read { db in
+            let record = try requireJournalRecord(db, id: recordId)
+            guard
+                record.recordSource == .import,
+                let batchId = record.sourceImportBatchId,
+                let candidateId = record.sourceImportCandidateId
+            else {
+                return nil
+            }
+            let batch = try requireImportBatch(db, id: batchId)
+            let candidate = try requireImportCandidate(db, id: candidateId)
+            return ImportTrace(batch: batch, candidate: candidate)
         }
     }
 
@@ -458,6 +755,8 @@ public final class LedgerUseCases: @unchecked Sendable {
                 engineKey: nil,
                 objectKey: nil,
                 sourceRecordIds: [],
+                sourceImportBatchId: nil,
+                sourceImportCandidateId: nil,
                 createdAt: now,
                 updatedAt: now
             )
@@ -813,6 +1112,23 @@ private struct EngineRecordDraft {
     var sourceRecordIds: [UUID]
 }
 
+private struct ParsedImportRow {
+    var lineNumber: Int
+    var rawPayload: String
+    var accountMonth: String
+    var occurredAt: Date
+    var paymentMethodName: String?
+    var amount: Decimal
+    var note: String?
+    var rawTransactionId: String?
+    var rawFingerprint: String
+}
+
+private struct ImportParseResult {
+    var rows: [ParsedImportRow]
+    var issues: [ImportIssue]
+}
+
 private let selectJournalRecordSQL = """
     SELECT
         journal_records.id,
@@ -833,6 +1149,8 @@ private let selectJournalRecordSQL = """
         journal_records.engine_key,
         journal_records.object_key,
         journal_records.source_record_ids,
+        journal_records.source_import_batch_id,
+        journal_records.source_import_candidate_id,
         journal_records.created_at,
         journal_records.updated_at
     FROM journal_records
@@ -904,14 +1222,90 @@ private func insertPaymentDetailIfNeeded(
         ])
 }
 
+private func insertImportBatch(_ db: Database, batch: ImportBatch) throws {
+    try db.execute(sql: """
+        INSERT INTO import_batches (id, source, file_name, imported_at, status, confirmed_record_count)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, arguments: [
+            batch.id.uuidString,
+            batch.source.rawValue,
+            batch.fileName,
+            encodeDate(batch.importedAt),
+            batch.status.rawValue,
+            batch.confirmedRecordCount
+        ])
+}
+
+private func insertImportCandidate(_ db: Database, candidate: ImportCandidateRecord, now: Date) throws {
+    try db.execute(sql: """
+        INSERT INTO import_candidates (
+            id, batch_id, status, account_month, occurred_at, payment_method_id,
+            payment_method_name, amount, payment_type_id, payment_type_name,
+            payment_detail_id, payment_detail_name, note, raw_line_number,
+            raw_payload, raw_transaction_id, raw_fingerprint, created_journal_record_id,
+            created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, arguments: importCandidateArguments(candidate, createdAt: now, updatedAt: now))
+}
+
+private func persistImportCandidateUpdate(_ db: Database, candidate: ImportCandidateRecord, updatedAt: Date) throws {
+    let currentCreatedAt = try String.fetchOne(
+        db,
+        sql: "SELECT created_at FROM import_candidates WHERE id = ?",
+        arguments: [candidate.id.uuidString]
+    ) ?? encodeDate(updatedAt)
+    var arguments = importCandidateArguments(candidate, createdAt: try decodeDate(currentCreatedAt), updatedAt: updatedAt)
+    arguments += [candidate.id.uuidString]
+    try db.execute(sql: """
+        UPDATE import_candidates SET
+            id = ?, batch_id = ?, status = ?, account_month = ?, occurred_at = ?,
+            payment_method_id = ?, payment_method_name = ?, amount = ?, payment_type_id = ?,
+            payment_type_name = ?, payment_detail_id = ?, payment_detail_name = ?, note = ?,
+            raw_line_number = ?, raw_payload = ?, raw_transaction_id = ?, raw_fingerprint = ?,
+            created_journal_record_id = ?, created_at = ?, updated_at = ?
+        WHERE id = ?
+        """, arguments: arguments)
+}
+
+private func importCandidateArguments(
+    _ candidate: ImportCandidateRecord,
+    createdAt: Date,
+    updatedAt: Date
+) -> StatementArguments {
+    [
+        candidate.id.uuidString,
+        candidate.batchId.uuidString,
+        candidate.status.rawValue,
+        candidate.accountMonth,
+        encodeDate(candidate.occurredAt),
+        candidate.paymentMethodId?.uuidString,
+        candidate.paymentMethodName,
+        encodeDecimal(candidate.amount),
+        candidate.paymentTypeId?.uuidString,
+        candidate.paymentTypeName,
+        candidate.paymentDetailId?.uuidString,
+        candidate.paymentDetailName,
+        candidate.note,
+        candidate.rawLineNumber,
+        candidate.rawPayload,
+        candidate.rawTransactionId,
+        candidate.rawFingerprint,
+        candidate.createdJournalRecordId?.uuidString,
+        encodeDate(createdAt),
+        encodeDate(updatedAt)
+    ]
+}
+
 private func insertJournalRecord(_ db: Database, record: JournalRecord) throws {
     try db.execute(sql: """
         INSERT INTO journal_records (
             id, account_month, occurred_at, payment_method_id, amount, payment_type_id,
             payment_detail_id, note, record_source, record_kind, carry_forward_role,
-            engine_family, engine_key, object_key, source_record_ids, created_at, updated_at
+            engine_family, engine_key, object_key, source_record_ids,
+            source_import_batch_id, source_import_candidate_id, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, arguments: journalRecordArguments(record))
 }
 
@@ -923,7 +1317,8 @@ private func persistJournalRecordUpdate(_ db: Database, record: JournalRecord) t
             id = ?, account_month = ?, occurred_at = ?, payment_method_id = ?, amount = ?,
             payment_type_id = ?, payment_detail_id = ?, note = ?, record_source = ?,
             record_kind = ?, carry_forward_role = ?, engine_family = ?, engine_key = ?,
-            object_key = ?, source_record_ids = ?, created_at = ?, updated_at = ?
+            object_key = ?, source_record_ids = ?, source_import_batch_id = ?,
+            source_import_candidate_id = ?, created_at = ?, updated_at = ?
         WHERE id = ?
         """, arguments: arguments)
 }
@@ -945,6 +1340,8 @@ private func journalRecordArguments(_ record: JournalRecord) -> StatementArgumen
         record.engineKey,
         record.objectKey,
         encodeUUIDList(record.sourceRecordIds),
+        record.sourceImportBatchId?.uuidString,
+        record.sourceImportCandidateId?.uuidString,
         encodeDate(record.createdAt),
         encodeDate(record.updatedAt)
     ]
@@ -1060,6 +1457,8 @@ private func makeEngineRecord(
         engineKey: draft.engineKey,
         objectKey: draft.objectKey,
         sourceRecordIds: draft.sourceRecordIds,
+        sourceImportBatchId: nil,
+        sourceImportCandidateId: nil,
         createdAt: createdAt,
         updatedAt: updatedAt
     )
@@ -1172,6 +1571,176 @@ private func requireJournalRecord(_ db: Database, id: UUID) throws -> JournalRec
     return try journalRecord(from: row)
 }
 
+private func requireImportBatch(_ db: Database, id: UUID) throws -> ImportBatch {
+    guard let row = try Row.fetchOne(
+        db,
+        sql: """
+            SELECT id, source, file_name, imported_at, status, confirmed_record_count
+            FROM import_batches
+            WHERE id = ?
+            """,
+        arguments: [id.uuidString]
+    ) else {
+        throw MingZhangError.validation("找不到导入批次")
+    }
+    return try importBatch(from: row)
+}
+
+private func requireImportCandidate(_ db: Database, id: UUID) throws -> ImportCandidateRecord {
+    guard let row = try Row.fetchOne(
+        db,
+        sql: """
+            SELECT id, batch_id, status, account_month, occurred_at, payment_method_id,
+                   payment_method_name, amount, payment_type_id, payment_type_name,
+                   payment_detail_id, payment_detail_name, note, raw_line_number,
+                   raw_payload, raw_transaction_id, raw_fingerprint, created_journal_record_id
+            FROM import_candidates
+            WHERE id = ?
+            """,
+        arguments: [id.uuidString]
+    ) else {
+        throw MingZhangError.validation("找不到导入候选记录")
+    }
+    return try importCandidate(from: row)
+}
+
+private func applyImportCandidateChanges(
+    _ db: Database,
+    candidate: inout ImportCandidateRecord,
+    changes: ImportCandidateChanges
+) throws {
+    guard candidate.status == .pending else {
+        throw MingZhangError.validation("只能整理待确认候选记录")
+    }
+    if let accountMonth = changes.accountMonth {
+        try validateAccountMonth(accountMonth)
+        candidate.accountMonth = accountMonth
+    }
+    if let amount = changes.amount {
+        candidate.amount = amount
+    }
+    if let paymentMethodName = changes.paymentMethodName {
+        let method = try requirePaymentMethod(db, name: paymentMethodName)
+        candidate.paymentMethodId = method.id
+        candidate.paymentMethodName = method.name
+    }
+    if let paymentTypeName = changes.paymentTypeName {
+        let type = try requirePaymentType(db, name: paymentTypeName)
+        candidate.paymentTypeId = type.id
+        candidate.paymentTypeName = type.name
+        if let detailName = candidate.paymentDetailName {
+            let detail = try requirePaymentDetail(db, name: detailName, paymentTypeId: type.id)
+            candidate.paymentDetailId = detail.id
+            candidate.paymentDetailName = detail.name
+        }
+    }
+    if let paymentDetailName = changes.paymentDetailName {
+        guard let typeId = candidate.paymentTypeId else {
+            throw MingZhangError.validation("请先选择收付类型")
+        }
+        let detail = try requirePaymentDetail(db, name: paymentDetailName, paymentTypeId: typeId)
+        candidate.paymentDetailId = detail.id
+        candidate.paymentDetailName = detail.name
+    }
+    if let note = changes.note {
+        candidate.note = note
+    }
+}
+
+private func importCandidateExists(
+    _ db: Database,
+    source: ImportSource,
+    transactionId: String?,
+    fingerprint: String
+) throws -> Bool {
+    if let transactionId, !transactionId.isEmpty {
+        let count = try Int.fetchOne(db, sql: """
+            SELECT COUNT(*)
+            FROM import_candidates
+            JOIN import_batches ON import_batches.id = import_candidates.batch_id
+            LEFT JOIN journal_records ON journal_records.id = import_candidates.created_journal_record_id
+            WHERE import_batches.source = ? AND import_candidates.raw_transaction_id = ?
+              AND (
+                import_candidates.status = ?
+                OR (import_candidates.status = ? AND journal_records.id IS NOT NULL)
+              )
+            """, arguments: [
+                source.rawValue,
+                transactionId,
+                ImportCandidateStatus.pending.rawValue,
+                ImportCandidateStatus.confirmed.rawValue
+            ]) ?? 0
+        return count > 0
+    }
+
+    let count = try Int.fetchOne(db, sql: """
+        SELECT COUNT(*)
+        FROM import_candidates
+        JOIN import_batches ON import_batches.id = import_candidates.batch_id
+        LEFT JOIN journal_records ON journal_records.id = import_candidates.created_journal_record_id
+        WHERE import_batches.source = ?
+          AND import_candidates.raw_transaction_id IS NULL
+          AND import_candidates.raw_fingerprint = ?
+          AND (
+            import_candidates.status = ?
+            OR (import_candidates.status = ? AND journal_records.id IS NOT NULL)
+          )
+        """, arguments: [
+            source.rawValue,
+            fingerprint,
+            ImportCandidateStatus.pending.rawValue,
+            ImportCandidateStatus.confirmed.rawValue
+        ]) ?? 0
+    return count > 0
+}
+
+private func resolveImportPaymentMethod(
+    _ db: Database,
+    source: ImportSource,
+    rawName: String?
+) throws -> (id: UUID?, name: String?) {
+    let cleaned = cleanImportField(rawName ?? "")
+    let pending = try requirePaymentMethod(db, name: "待补真实账户")
+    guard !cleaned.isEmpty, cleaned != "/" else {
+        return (pending.id, pending.name)
+    }
+    if let exact = try Row.fetchOne(
+        db,
+        sql: "SELECT id, name, method_type, is_active FROM payment_methods WHERE name = ?",
+        arguments: [cleaned]
+    ).map(paymentMethod(from:)) {
+        return (exact.id, exact.name)
+    }
+    switch source {
+    case .alipay:
+        return (nil, cleaned)
+    case .wechat:
+        return (pending.id, pending.name)
+    }
+}
+
+private func incrementBatchConfirmedCount(_ db: Database, batchId: UUID) throws {
+    try db.execute(sql: """
+        UPDATE import_batches
+        SET confirmed_record_count = confirmed_record_count + 1
+        WHERE id = ?
+        """, arguments: [batchId.uuidString])
+}
+
+private func markBatchConfirmedIfComplete(_ db: Database, batchId: UUID) throws {
+    let pendingCount = try Int.fetchOne(db, sql: """
+        SELECT COUNT(*)
+        FROM import_candidates
+        WHERE batch_id = ? AND status = ?
+        """, arguments: [batchId.uuidString, ImportCandidateStatus.pending.rawValue]) ?? 0
+    guard pendingCount == 0 else { return }
+    try db.execute(sql: """
+        UPDATE import_batches
+        SET status = ?
+        WHERE id = ?
+        """, arguments: [ImportBatchStatus.confirmed.rawValue, batchId.uuidString])
+}
+
 private func validateRecordFields(
     accountMonth: String,
     amount: Decimal,
@@ -1179,9 +1748,6 @@ private func validateRecordFields(
     paymentDetail: PaymentDetail
 ) throws {
     try validateAccountMonth(accountMonth)
-    guard amount != Decimal(0) else {
-        throw MingZhangError.validation("金额不能为 0")
-    }
     guard paymentDetail.paymentTypeId == paymentType.id else {
         throw MingZhangError.validation("类型明细必须归属于当前收付类型")
     }
@@ -1230,6 +1796,43 @@ private func paymentDetail(from row: Row) throws -> PaymentDetail {
     )
 }
 
+private func importBatch(from row: Row) throws -> ImportBatch {
+    let sourceValue: String = row["source"]
+    let statusValue: String = row["status"]
+    return ImportBatch(
+        id: try requireUUID(row["id"]),
+        source: ImportSource(rawValue: sourceValue) ?? .alipay,
+        fileName: row["file_name"],
+        importedAt: try decodeDate(row["imported_at"]),
+        status: ImportBatchStatus(rawValue: statusValue) ?? .draft,
+        confirmedRecordCount: row["confirmed_record_count"]
+    )
+}
+
+private func importCandidate(from row: Row) throws -> ImportCandidateRecord {
+    let statusValue: String = row["status"]
+    return ImportCandidateRecord(
+        id: try requireUUID(row["id"]),
+        batchId: try requireUUID(row["batch_id"]),
+        status: ImportCandidateStatus(rawValue: statusValue) ?? .pending,
+        accountMonth: row["account_month"],
+        occurredAt: try decodeDate(row["occurred_at"]),
+        paymentMethodId: optionalUUID(row["payment_method_id"]),
+        paymentMethodName: row["payment_method_name"],
+        amount: decodeDecimal(row["amount"]),
+        paymentTypeId: optionalUUID(row["payment_type_id"]),
+        paymentTypeName: row["payment_type_name"],
+        paymentDetailId: optionalUUID(row["payment_detail_id"]),
+        paymentDetailName: row["payment_detail_name"],
+        note: row["note"],
+        rawLineNumber: row["raw_line_number"],
+        rawPayload: row["raw_payload"],
+        rawTransactionId: row["raw_transaction_id"],
+        rawFingerprint: row["raw_fingerprint"],
+        createdJournalRecordId: optionalUUID(row["created_journal_record_id"])
+    )
+}
+
 private func journalRecord(from row: Row) throws -> JournalRecord {
     let recordSource = RecordSource(rawValue: row["record_source"]) ?? .manual
     let engineFamilyValue: String? = row["engine_family"]
@@ -1253,6 +1856,8 @@ private func journalRecord(from row: Row) throws -> JournalRecord {
         engineKey: row["engine_key"],
         objectKey: row["object_key"],
         sourceRecordIds: decodeUUIDList(row["source_record_ids"]),
+        sourceImportBatchId: optionalUUID(row["source_import_batch_id"]),
+        sourceImportCandidateId: optionalUUID(row["source_import_candidate_id"]),
         createdAt: try decodeDate(row["created_at"]),
         updatedAt: try decodeDate(row["updated_at"])
     )
@@ -1263,6 +1868,10 @@ private func requireUUID(_ value: String) throws -> UUID {
         throw MingZhangError.missingSeed("无效 UUID：\(value)")
     }
     return uuid
+}
+
+private func optionalUUID(_ value: String?) -> UUID? {
+    value.flatMap(UUID.init(uuidString:))
 }
 
 private func encodeDate(_ date: Date) -> String {
@@ -1292,6 +1901,343 @@ private func decodeUUIDList(_ value: String) -> [UUID] {
     value
         .split(separator: ",")
         .compactMap { UUID(uuidString: String($0)) }
+}
+
+private func parseImportRows(source: ImportSource, contents: String) throws -> ImportParseResult {
+    let normalized = contents
+        .replacingOccurrences(of: "\r\n", with: "\n")
+        .replacingOccurrences(of: "\r", with: "\n")
+        .trimmingCharacters(in: CharacterSet(charactersIn: "\u{feff}"))
+    let lines = normalized.components(separatedBy: "\n")
+    guard let headerIndex = lines.firstIndex(where: { isImportHeaderLine($0, source: source) }) else {
+        throw MingZhangError.validation(source == .alipay ? "无法识别支付宝账单字段" : "无法识别微信账单字段")
+    }
+
+    var rows: [ParsedImportRow] = []
+    var issues: [ImportIssue] = []
+    for index in lines.indices where index > headerIndex {
+        let line = lines[index]
+        let lineNumber = index + 1
+        guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+        guard !line.hasPrefix("---") else { continue }
+
+        switch source {
+        case .alipay:
+            parseAlipayLine(line, lineNumber: lineNumber, rows: &rows, issues: &issues)
+        case .wechat:
+            parseWechatLine(line, lineNumber: lineNumber, rows: &rows, issues: &issues)
+        }
+    }
+    return ImportParseResult(rows: rows, issues: issues)
+}
+
+private func parseXLSXImportRows(source: ImportSource, data: Data) throws -> ImportParseResult {
+    let file = try XLSXFile(data: data)
+    guard
+        let workbook = try file.parseWorkbooks().first,
+        let worksheetPath = try file.parseWorksheetPathsAndNames(workbook: workbook).first?.path
+    else {
+        throw MingZhangError.validation("无法识别 XLSX 工作表")
+    }
+
+    let worksheet = try file.parseWorksheet(at: worksheetPath)
+    let sharedStrings = try file.parseSharedStrings()
+    let rows = worksheet.data?.rows ?? []
+    let maxRow = rows.map(\.reference).max() ?? 0
+    guard maxRow > 0 else {
+        throw MingZhangError.validation(source == .alipay ? "无法识别支付宝账单字段" : "无法识别微信账单字段")
+    }
+
+    var lines = Array(repeating: "", count: Int(maxRow))
+    for row in rows {
+        lines[Int(row.reference) - 1] = xlsxRowCSVLine(row.cells, sharedStrings: sharedStrings)
+    }
+    return try parseImportRows(source: source, contents: lines.joined(separator: "\n"))
+}
+
+private func xlsxRowCSVLine(_ cells: [Cell], sharedStrings: SharedStrings?) -> String {
+    let valuesByColumn = Dictionary(uniqueKeysWithValues: cells.map { cell in
+        (xlsxColumnIndex(cell.reference.column.description), xlsxCellText(cell, sharedStrings: sharedStrings))
+    })
+    let maxColumn = valuesByColumn.keys.max() ?? 0
+    guard maxColumn > 0 else { return "" }
+    return (1...maxColumn)
+        .map { csvEscapedField(valuesByColumn[$0] ?? "") }
+        .joined(separator: ",")
+}
+
+private func xlsxCellText(_ cell: Cell, sharedStrings: SharedStrings?) -> String {
+    if let sharedStrings, let value = cell.stringValue(sharedStrings) {
+        return value
+    }
+    if let text = cell.inlineString?.text {
+        return text
+    }
+    if let date = cell.dateValue {
+        return importDateTimeString(from: date)
+    }
+    return cell.value ?? ""
+}
+
+private func xlsxColumnIndex(_ value: String) -> Int {
+    value.uppercased().unicodeScalars.reduce(0) { result, scalar in
+        guard (65...90).contains(scalar.value) else { return result }
+        return result * 26 + Int(scalar.value - 64)
+    }
+}
+
+private func csvEscapedField(_ value: String) -> String {
+    guard value.contains(",") || value.contains("\"") || value.contains("\n") else {
+        return value
+    }
+    return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
+}
+
+private func isImportHeaderLine(_ line: String, source: ImportSource) -> Bool {
+    let normalized = cleanImportField(line)
+    switch source {
+    case .alipay:
+        return normalized.contains("交易时间") &&
+            normalized.contains("收/支") &&
+            normalized.contains("金额") &&
+            normalized.contains("交易订单号")
+    case .wechat:
+        return normalized.contains("交易时间") &&
+            normalized.contains("收/支") &&
+            normalized.contains("金额(元)") &&
+            normalized.contains("交易单号")
+    }
+}
+
+private func parseAlipayLine(
+    _ line: String,
+    lineNumber: Int,
+    rows: inout [ParsedImportRow],
+    issues: inout [ImportIssue]
+) {
+    let fields = parseCSVLine(line)
+    guard fields.count >= 10 else {
+        issues.append(ImportIssue(lineNumber: lineNumber, code: .unknownFields, message: "支付宝账单行字段不足"))
+        return
+    }
+
+    let occurredAtText = cleanImportField(fields[0])
+    let category = cleanImportField(fields[1])
+    let counterparty = cleanImportField(fields[2])
+    let product = cleanImportField(fields[safe: 4] ?? "")
+    let amountText = cleanImportField(fields[safe: 6] ?? "")
+    let paymentMethodName = cleanImportField(fields[safe: 7] ?? "")
+    let transactionId = nonEmptyImportField(fields[safe: 9])
+
+    guard let occurredAt = parseImportDate(occurredAtText) else {
+        issues.append(ImportIssue(lineNumber: lineNumber, code: .invalidDate, message: "无法识别交易时间"))
+        return
+    }
+    guard let unsignedAmount = parseImportAmount(amountText) else {
+        issues.append(ImportIssue(lineNumber: lineNumber, code: .invalidAmount, message: "无法识别金额"))
+        return
+    }
+
+    let amount = absoluteDecimal(unsignedAmount)
+    let note = makeImportNote(prefix: category, counterparty: counterparty, product: product)
+    rows.append(ParsedImportRow(
+        lineNumber: lineNumber,
+        rawPayload: line,
+        accountMonth: accountMonthString(from: occurredAt),
+        occurredAt: occurredAt,
+        paymentMethodName: paymentMethodName.isEmpty ? nil : paymentMethodName,
+        amount: amount,
+        note: note,
+        rawTransactionId: transactionId,
+        rawFingerprint: makeRawFingerprint(source: .alipay, rawPayload: line)
+    ))
+}
+
+private func parseWechatLine(
+    _ line: String,
+    lineNumber: Int,
+    rows: inout [ParsedImportRow],
+    issues: inout [ImportIssue]
+) {
+    let fields = parseCSVLine(line)
+    guard fields.count >= 9 else {
+        issues.append(ImportIssue(lineNumber: lineNumber, code: .unknownFields, message: "微信账单行字段不足"))
+        return
+    }
+
+    let occurredAtText = cleanImportField(fields[0])
+    let transactionType = cleanImportField(fields[1])
+    let counterparty = cleanImportField(fields[2])
+    let product = cleanImportField(fields[3])
+    let amountText = cleanImportField(fields[5])
+    let paymentMethodName = cleanImportField(fields[6])
+    let transactionId = nonEmptyImportField(fields[safe: 8])
+
+    guard let occurredAt = parseImportDate(occurredAtText) else {
+        issues.append(ImportIssue(lineNumber: lineNumber, code: .invalidDate, message: "无法识别交易时间"))
+        return
+    }
+    guard let unsignedAmount = parseImportAmount(amountText) else {
+        issues.append(ImportIssue(lineNumber: lineNumber, code: .invalidAmount, message: "无法识别金额"))
+        return
+    }
+
+    let amount = absoluteDecimal(unsignedAmount)
+    let note = makeImportNote(prefix: transactionType, counterparty: counterparty, product: product)
+    rows.append(ParsedImportRow(
+        lineNumber: lineNumber,
+        rawPayload: line,
+        accountMonth: accountMonthString(from: occurredAt),
+        occurredAt: occurredAt,
+        paymentMethodName: paymentMethodName.isEmpty ? nil : paymentMethodName,
+        amount: amount,
+        note: note,
+        rawTransactionId: transactionId,
+        rawFingerprint: makeRawFingerprint(source: .wechat, rawPayload: line)
+    ))
+}
+
+private func parseCSVLine(_ line: String) -> [String] {
+    var fields: [String] = []
+    var current = ""
+    var isInsideQuotes = false
+    var iterator = line.makeIterator()
+    while let character = iterator.next() {
+        if character == "\"" {
+            if isInsideQuotes, let next = iterator.next() {
+                if next == "\"" {
+                    current.append("\"")
+                } else {
+                    isInsideQuotes.toggle()
+                    if next == "," {
+                        fields.append(current)
+                        current = ""
+                    } else {
+                        current.append(next)
+                    }
+                }
+            } else {
+                isInsideQuotes.toggle()
+            }
+        } else if character == ",", !isInsideQuotes {
+            fields.append(current)
+            current = ""
+        } else {
+            current.append(character)
+        }
+    }
+    fields.append(current)
+    return fields.map(cleanImportField)
+}
+
+private func cleanImportField(_ value: String) -> String {
+    value
+        .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\u{feff}\t\"")))
+}
+
+private func nonEmptyImportField(_ value: String?) -> String? {
+    let cleaned = cleanImportField(value ?? "")
+    return cleaned.isEmpty || cleaned == "/" ? nil : cleaned
+}
+
+private func parseImportDate(_ value: String) -> Date? {
+    let trimmed = cleanImportField(value)
+    let normalized = trimmed.count == 10 ? "\(trimmed) 00:00:00" : trimmed
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    return formatter.date(from: normalized)
+}
+
+private func parseImportAmount(_ value: String) -> Decimal? {
+    let cleaned = cleanImportField(value)
+        .replacingOccurrences(of: "¥", with: "")
+        .replacingOccurrences(of: "￥", with: "")
+        .replacingOccurrences(of: ",", with: "")
+        .replacingOccurrences(of: "元", with: "")
+    if cleaned.isEmpty || cleaned == "/" || cleaned.lowercased() == "null" {
+        return Decimal(0)
+    }
+    guard let amount = Decimal(string: cleaned, locale: Locale(identifier: "en_US_POSIX")) else {
+        return nil
+    }
+    return amount
+}
+
+private func absoluteDecimal(_ value: Decimal) -> Decimal {
+    value < Decimal(0) ? -value : value
+}
+
+private func accountMonthString(from date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+    formatter.dateFormat = "yyyy-MM"
+    return formatter.string(from: date)
+}
+
+private func importDateTimeString(from date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    return formatter.string(from: date)
+}
+
+private func makeImportNote(prefix: String, counterparty: String, product: String) -> String? {
+    let parts = [counterparty, product].filter { !$0.isEmpty && $0 != "/" }
+    guard !prefix.isEmpty || !parts.isEmpty else { return nil }
+    let body = parts.joined(separator: " - ")
+    if prefix.isEmpty {
+        return body
+    }
+    if body.isEmpty {
+        return "[\(prefix)]"
+    }
+    return "[\(prefix)] \(body)"
+}
+
+private func makeRawFingerprint(source: ImportSource, rawPayload: String) -> String {
+    let payload = [
+        source.rawValue,
+        rawPayload
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\t", with: "")
+    ].joined(separator: "|")
+    let digest = SHA256.hash(data: Data(payload.utf8))
+    return digest.map { String(format: "%02x", $0) }.joined().prefix(16).description
+}
+
+private func decodeImportText(_ data: Data) throws -> String {
+    let encodings: [String.Encoding] = [.utf8, .unicode, .utf16, .gb18030]
+    for encoding in encodings {
+        if let value = String(data: data, encoding: encoding) {
+            return value
+        }
+    }
+    throw MingZhangError.validation("无法读取账单文件编码")
+}
+
+private func isWechatNeutralTransaction(_ type: String) -> Bool {
+    type == "零钱提现" ||
+        type == "信用卡还款" ||
+        type.hasPrefix("转入零钱通-") ||
+        type.hasPrefix("零钱通转出-")
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}
+
+private extension String.Encoding {
+    static var gb18030: String.Encoding {
+        String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+        ))
+    }
 }
 
 private func monthEndPlaceholder(_ accountMonth: String) -> Date {
