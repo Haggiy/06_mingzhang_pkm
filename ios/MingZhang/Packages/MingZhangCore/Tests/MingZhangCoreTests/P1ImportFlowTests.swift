@@ -317,6 +317,49 @@ final class P1ImportFlowTests: XCTestCase {
         XCTAssertNil(thirdCandidate.paymentDetailId)
     }
 
+    func testImportMemoryUsesCurrentImportedJournalClassificationAfterEdit() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+        try insertPaymentTypeAndDetailForTest(database: database, typeName: "文娱游购开支", detailName: "饮食游乐费")
+
+        let firstContents = """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-15 12:30:45,餐饮美食,编辑记忆店,/,晚餐套餐,支出,100.00,广发卡,交易成功,ALIPAY-MEMORY-EDIT-001\t,\t,,
+        """
+        let firstBatch = try useCases.createImportBatch(source: .alipay, fileName: "memory-edit-1.csv", contents: firstContents)
+        let firstCandidate = try XCTUnwrap(firstBatch.candidates.first)
+        _ = try useCases.updateImportCandidate(
+            id: firstCandidate.id,
+            changes: ImportCandidateChanges(
+                paymentMethodName: "广发卡",
+                paymentTypeName: "生活必要开支",
+                paymentDetailName: "伙食费"
+            )
+        )
+        let record = try XCTUnwrap(try useCases.confirmImportCandidates(ids: [firstCandidate.id]).first)
+
+        _ = try useCases.updateJournalRecord(
+            id: record.id,
+            changes: JournalRecordChanges(
+                paymentTypeName: "文娱游购开支",
+                paymentDetailName: "饮食游乐费"
+            )
+        )
+
+        let secondContents = """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-16 12:30:45,餐饮美食,编辑记忆店,/,晚餐套餐,支出,90.00,广发卡,交易成功,ALIPAY-MEMORY-EDIT-002\t,\t,,
+        """
+        let secondBatch = try useCases.createImportBatch(source: .alipay, fileName: "memory-edit-2.csv", contents: secondContents)
+        let secondCandidate = try XCTUnwrap(secondBatch.candidates.first)
+
+        XCTAssertEqual(secondCandidate.paymentTypeName, "文娱游购开支")
+        XCTAssertEqual(secondCandidate.paymentDetailName, "饮食游乐费")
+    }
+
     func testImportRecordCanTraceBackToBatchAndRawCandidate() throws {
         let database = try LedgerDatabase.inMemory()
         let useCases = LedgerUseCases(database: database)
