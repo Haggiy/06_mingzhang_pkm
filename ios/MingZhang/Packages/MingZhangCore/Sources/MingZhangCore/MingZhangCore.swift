@@ -1684,7 +1684,7 @@ private func applyImportCandidateChanges(
         let type = try requirePaymentType(db, name: paymentTypeName)
         candidate.paymentTypeId = type.id
         candidate.paymentTypeName = type.name
-        if let detailName = candidate.paymentDetailName {
+        if changes.paymentDetailName == nil, let detailName = candidate.paymentDetailName {
             let detail = try requirePaymentDetail(db, name: detailName, paymentTypeId: type.id)
             candidate.paymentDetailId = detail.id
             candidate.paymentDetailName = detail.name

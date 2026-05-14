@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import XCTest
 @testable import MingZhangCore
 
@@ -260,6 +261,60 @@ final class P1ImportFlowTests: XCTestCase {
         XCTAssertEqual(secondCandidate.paymentDetailName, "伙食费")
         XCTAssertNotNil(secondCandidate.paymentTypeId)
         XCTAssertNotNil(secondCandidate.paymentDetailId)
+    }
+
+    func testImportMemoryLeavesClassificationEmptyWhenSameSourceMerchantAndProductHistoryConflicts() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+        try insertPaymentTypeAndDetailForTest(database: database, typeName: "文娱游购开支", detailName: "饮食游乐费")
+
+        let firstContents = """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-15 12:30:45,餐饮美食,冲突便利店,/,午餐套餐,支出,100.00,广发卡,交易成功,ALIPAY-MEMORY-CONFLICT-001\t,\t,,
+        """
+        let firstBatch = try useCases.createImportBatch(source: .alipay, fileName: "memory-conflict-1.csv", contents: firstContents)
+        let firstCandidate = try XCTUnwrap(firstBatch.candidates.first)
+        _ = try useCases.updateImportCandidate(
+            id: firstCandidate.id,
+            changes: ImportCandidateChanges(
+                paymentMethodName: "广发卡",
+                paymentTypeName: "生活必要开支",
+                paymentDetailName: "伙食费"
+            )
+        )
+        _ = try useCases.confirmImportCandidates(ids: [firstCandidate.id])
+
+        let secondContents = """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-16 12:30:45,餐饮美食,冲突便利店,/,午餐套餐,支出,80.00,广发卡,交易成功,ALIPAY-MEMORY-CONFLICT-002\t,\t,,
+        """
+        let secondBatch = try useCases.createImportBatch(source: .alipay, fileName: "memory-conflict-2.csv", contents: secondContents)
+        let secondCandidate = try XCTUnwrap(secondBatch.candidates.first)
+        _ = try useCases.updateImportCandidate(
+            id: secondCandidate.id,
+            changes: ImportCandidateChanges(
+                paymentMethodName: "广发卡",
+                paymentTypeName: "文娱游购开支",
+                paymentDetailName: "饮食游乐费"
+            )
+        )
+        _ = try useCases.confirmImportCandidates(ids: [secondCandidate.id])
+
+        let thirdContents = """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-17 12:30:45,餐饮美食,冲突便利店,/,午餐套餐,支出,35.00,广发卡,交易成功,ALIPAY-MEMORY-CONFLICT-003\t,\t,,
+        """
+        let thirdBatch = try useCases.createImportBatch(source: .alipay, fileName: "memory-conflict-3.csv", contents: thirdContents)
+        let thirdCandidate = try XCTUnwrap(thirdBatch.candidates.first)
+
+        XCTAssertNil(thirdCandidate.paymentTypeName)
+        XCTAssertNil(thirdCandidate.paymentDetailName)
+        XCTAssertNil(thirdCandidate.paymentTypeId)
+        XCTAssertNil(thirdCandidate.paymentDetailId)
     }
 
     func testImportRecordCanTraceBackToBatchAndRawCandidate() throws {
@@ -571,5 +626,25 @@ final class P1ImportFlowTests: XCTestCase {
 
     private func decimal(_ value: String) throws -> Decimal {
         try XCTUnwrap(Decimal(string: value, locale: Locale(identifier: "en_US_POSIX")))
+    }
+
+    private func insertPaymentTypeAndDetailForTest(
+        database: LedgerDatabase,
+        typeName: String,
+        detailName: String
+    ) throws {
+        try database.writer.write { db in
+            let now = ISO8601DateFormatter().string(from: Date())
+            let typeId = UUID().uuidString
+            let detailId = UUID().uuidString
+            try db.execute(sql: """
+                INSERT INTO payment_types (id, name, element, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, arguments: [typeId, typeName, AccountingElement.expense.rawValue, true, now, now])
+            try db.execute(sql: """
+                INSERT INTO payment_details (id, name, payment_type_id, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, arguments: [detailId, detailName, typeId, true, now, now])
+        }
     }
 }
