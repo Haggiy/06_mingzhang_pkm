@@ -528,6 +528,7 @@ public final class LedgerUseCases: @unchecked Sendable {
             )
             try insertImportBatch(db, batch: batch)
 
+            let memoryIndex = try loadImportMemoryIndex(db, source: source)
             var issues = parseResult.issues
             var candidates: [ImportCandidateRecord] = []
             var seenKeys: Set<String> = []
@@ -545,6 +546,7 @@ public final class LedgerUseCases: @unchecked Sendable {
                 }
 
                 let method = try resolveImportPaymentMethod(db, source: source, rawName: row.paymentMethodName)
+                let memory = row.memoryKey.flatMap { memoryIndex[$0] }
                 let candidate = ImportCandidateRecord(
                     id: UUID(),
                     batchId: batch.id,
@@ -554,10 +556,10 @@ public final class LedgerUseCases: @unchecked Sendable {
                     paymentMethodId: method.id,
                     paymentMethodName: method.name,
                     amount: row.amount,
-                    paymentTypeId: nil,
-                    paymentTypeName: nil,
-                    paymentDetailId: nil,
-                    paymentDetailName: nil,
+                    paymentTypeId: memory?.paymentTypeId,
+                    paymentTypeName: memory?.paymentTypeName,
+                    paymentDetailId: memory?.paymentDetailId,
+                    paymentDetailName: memory?.paymentDetailName,
                     note: row.note,
                     rawLineNumber: row.lineNumber,
                     rawPayload: row.rawPayload,
@@ -1112,6 +1114,19 @@ private struct EngineRecordDraft {
     var sourceRecordIds: [UUID]
 }
 
+private struct ImportMemoryKey: Hashable {
+    var source: ImportSource
+    var counterparty: String
+    var product: String
+}
+
+private struct ImportMemoryClassification: Hashable {
+    var paymentTypeId: UUID
+    var paymentTypeName: String
+    var paymentDetailId: UUID
+    var paymentDetailName: String
+}
+
 private struct ParsedImportRow {
     var lineNumber: Int
     var rawPayload: String
@@ -1122,6 +1137,7 @@ private struct ParsedImportRow {
     var note: String?
     var rawTransactionId: String?
     var rawFingerprint: String
+    var memoryKey: ImportMemoryKey?
 }
 
 private struct ImportParseResult {
@@ -1247,6 +1263,46 @@ private func insertImportCandidate(_ db: Database, candidate: ImportCandidateRec
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, arguments: importCandidateArguments(candidate, createdAt: now, updatedAt: now))
+}
+
+private func loadImportMemoryIndex(_ db: Database, source: ImportSource) throws -> [ImportMemoryKey: ImportMemoryClassification] {
+    let rows = try Row.fetchAll(db, sql: """
+        SELECT
+            import_candidates.raw_payload,
+            journal_records.payment_type_id,
+            payment_types.name AS payment_type_name,
+            journal_records.payment_detail_id,
+            payment_details.name AS payment_detail_name
+        FROM import_candidates
+        JOIN import_batches ON import_batches.id = import_candidates.batch_id
+        JOIN journal_records ON journal_records.source_import_candidate_id = import_candidates.id
+        JOIN payment_types ON payment_types.id = journal_records.payment_type_id
+        JOIN payment_details ON payment_details.id = journal_records.payment_detail_id
+        WHERE import_batches.source = ?
+          AND import_candidates.status = ?
+          AND journal_records.record_source = ?
+        """, arguments: [
+            source.rawValue,
+            ImportCandidateStatus.confirmed.rawValue,
+            RecordSource.import.rawValue
+        ])
+
+    var classificationsByKey: [ImportMemoryKey: Set<ImportMemoryClassification>] = [:]
+    for row in rows {
+        let rawPayload: String = row["raw_payload"]
+        guard let key = importMemoryKey(source: source, rawPayload: rawPayload) else { continue }
+        let classification = ImportMemoryClassification(
+            paymentTypeId: try requireUUID(row["payment_type_id"]),
+            paymentTypeName: row["payment_type_name"],
+            paymentDetailId: try requireUUID(row["payment_detail_id"]),
+            paymentDetailName: row["payment_detail_name"]
+        )
+        classificationsByKey[key, default: []].insert(classification)
+    }
+
+    return classificationsByKey.compactMapValues { classifications in
+        classifications.count == 1 ? classifications.first : nil
+    }
 }
 
 private func persistImportCandidateUpdate(_ db: Database, candidate: ImportCandidateRecord, updatedAt: Date) throws {
@@ -2009,6 +2065,34 @@ private func isImportHeaderLine(_ line: String, source: ImportSource) -> Bool {
     }
 }
 
+private func makeImportMemoryKey(source: ImportSource, counterparty: String, product: String) -> ImportMemoryKey? {
+    let cleanedCounterparty = cleanImportField(counterparty)
+    let cleanedProduct = cleanImportField(product)
+    guard !cleanedCounterparty.isEmpty, cleanedCounterparty != "/" else { return nil }
+    guard !cleanedProduct.isEmpty, cleanedProduct != "/" else { return nil }
+    return ImportMemoryKey(source: source, counterparty: cleanedCounterparty, product: cleanedProduct)
+}
+
+private func importMemoryKey(source: ImportSource, rawPayload: String) -> ImportMemoryKey? {
+    let fields = parseCSVLine(rawPayload)
+    switch source {
+    case .alipay:
+        guard fields.count >= 5 else { return nil }
+        return makeImportMemoryKey(
+            source: source,
+            counterparty: fields[2],
+            product: fields[4]
+        )
+    case .wechat:
+        guard fields.count >= 4 else { return nil }
+        return makeImportMemoryKey(
+            source: source,
+            counterparty: fields[2],
+            product: fields[3]
+        )
+    }
+}
+
 private func parseAlipayLine(
     _ line: String,
     lineNumber: Int,
@@ -2049,7 +2133,8 @@ private func parseAlipayLine(
         amount: amount,
         note: note,
         rawTransactionId: transactionId,
-        rawFingerprint: makeRawFingerprint(source: .alipay, rawPayload: line)
+        rawFingerprint: makeRawFingerprint(source: .alipay, rawPayload: line),
+        memoryKey: makeImportMemoryKey(source: .alipay, counterparty: counterparty, product: product)
     ))
 }
 
@@ -2093,7 +2178,8 @@ private func parseWechatLine(
         amount: amount,
         note: note,
         rawTransactionId: transactionId,
-        rawFingerprint: makeRawFingerprint(source: .wechat, rawPayload: line)
+        rawFingerprint: makeRawFingerprint(source: .wechat, rawPayload: line),
+        memoryKey: makeImportMemoryKey(source: .wechat, counterparty: counterparty, product: product)
     ))
 }
 
