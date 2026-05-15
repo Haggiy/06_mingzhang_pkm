@@ -54,6 +54,53 @@ final class P1InvestmentLedgerTests: XCTestCase {
         XCTAssertEqual(calculatedSell.averageCost, Decimal(string: "1.50")!)
         XCTAssertEqual(calculatedSell.bookValue, Decimal(150))
     }
+
+    func testInvestmentSellCreatesFeedRecordsAndRecalculatesCashAndInvestmentAsset() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        _ = try useCases.createInvestmentTransaction(input: investmentInput(
+            accountMonth: "2026-03",
+            occurredAt: "2026-03-10T00:00:00Z",
+            type: .buy,
+            amount: Decimal(300),
+            share: Decimal(200),
+            nav: Decimal(string: "1.50")!
+        ))
+        let sell = try useCases.createInvestmentTransaction(input: investmentInput(
+            accountMonth: "2026-04",
+            occurredAt: "2026-04-10T00:00:00Z",
+            type: .sell,
+            amount: Decimal(-120),
+            share: Decimal(-100),
+            note: "赎回"
+        ))
+
+        let feedRecords = try useCases.queryJournalRecords(
+            filter: JournalRecordFilter(accountMonths: ["2026-04"], includeEngineRecords: true)
+        ).filter { $0.recordSource == .investmentFeed }
+
+        XCTAssertEqual(feedRecords.count, 2)
+        let sellCost = try XCTUnwrap(feedRecords.first { $0.paymentDetailName == "金融资产投资" })
+        XCTAssertEqual(sellCost.amount, Decimal(-150))
+        XCTAssertEqual(sellCost.paymentTypeName, "资产类支出")
+        XCTAssertEqual(sellCost.sourceInvestmentTransactionIds, [sell.id])
+
+        let loss = try XCTUnwrap(feedRecords.first { $0.paymentDetailName == "投资亏损" })
+        XCTAssertEqual(loss.amount, Decimal(30))
+        XCTAssertEqual(loss.paymentTypeName, "财务费用开支")
+        XCTAssertEqual(loss.sourceInvestmentTransactionIds, [sell.id])
+
+        let home = try useCases.queryHomeSummary(accountMonth: "2026-04")
+        XCTAssertEqual(home.expenseTotal, Decimal(30))
+
+        let balance = try useCases.queryBalanceSummary(accountMonth: "2026-04")
+        XCTAssertEqual(balance.cashBalance, Decimal(120))
+        XCTAssertEqual(balance.investmentItems, [
+            BalanceItem(name: "总投资资产", amount: Decimal(150), sourceRecordIds: [])
+        ])
+    }
 }
 
 private func investmentInput(
