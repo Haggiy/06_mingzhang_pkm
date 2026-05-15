@@ -101,6 +101,47 @@ final class P1InvestmentLedgerTests: XCTestCase {
             BalanceItem(name: "总投资资产", amount: Decimal(150), sourceRecordIds: [])
         ])
     }
+
+    func testUpdatingAndDeletingInvestmentTransactionReplacesAffectedMonthlyFeeds() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        _ = try useCases.createInvestmentTransaction(input: investmentInput(
+            accountMonth: "2026-03",
+            occurredAt: "2026-03-10T00:00:00Z",
+            type: .buy,
+            amount: Decimal(300),
+            share: Decimal(200)
+        ))
+        let sell = try useCases.createInvestmentTransaction(input: investmentInput(
+            accountMonth: "2026-04",
+            occurredAt: "2026-04-10T00:00:00Z",
+            type: .sell,
+            amount: Decimal(-120),
+            share: Decimal(-100)
+        ))
+
+        _ = try useCases.updateInvestmentTransaction(
+            id: sell.id,
+            changes: InvestmentTransactionChanges(tradeAmount: Decimal(-180), tradeShare: Decimal(-100))
+        )
+        var feedRecords = try useCases.queryJournalRecords(
+            filter: JournalRecordFilter(accountMonths: ["2026-04"], includeEngineRecords: true)
+        ).filter { $0.recordSource == .investmentFeed }
+
+        XCTAssertEqual(feedRecords.count, 2)
+        XCTAssertEqual(feedRecords.first { $0.paymentDetailName == "金融资产投资" }?.amount, Decimal(-150))
+        XCTAssertEqual(feedRecords.first { $0.paymentDetailName == "投资收益" }?.amount, Decimal(30))
+        XCTAssertNil(feedRecords.first { $0.paymentDetailName == "投资亏损" })
+
+        try useCases.deleteInvestmentTransaction(id: sell.id)
+        feedRecords = try useCases.queryJournalRecords(
+            filter: JournalRecordFilter(accountMonths: ["2026-04"], includeEngineRecords: true)
+        ).filter { $0.recordSource == .investmentFeed }
+        XCTAssertTrue(feedRecords.isEmpty)
+        XCTAssertEqual(try useCases.queryBalanceSummary(accountMonth: "2026-04").investmentItems.first?.amount, Decimal(300))
+    }
 }
 
 private func investmentInput(

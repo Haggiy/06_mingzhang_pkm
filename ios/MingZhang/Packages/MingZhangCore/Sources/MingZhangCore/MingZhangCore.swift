@@ -563,6 +563,94 @@ public final class LedgerUseCases: @unchecked Sendable {
         return result.transaction
     }
 
+    @discardableResult
+    public func updateInvestmentTransaction(id: UUID, changes: InvestmentTransactionChanges) throws -> InvestmentTransaction {
+        let result = try database.writer.write { db in
+            let original = try requireInvestmentTransaction(db, id: id)
+            let oldFundMonths = Set(try fetchInvestmentTransactions(db, fundName: original.fundName).map(\.accountMonth))
+            var transaction = original
+
+            if let accountMonth = changes.accountMonth {
+                transaction.accountMonth = accountMonth
+            }
+            if let occurredAt = changes.occurredAt {
+                transaction.occurredAt = occurredAt
+            }
+            if let fundName = changes.fundName {
+                transaction.fundName = fundName.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let transactionType = changes.transactionType {
+                transaction.transactionType = transactionType
+            }
+            if let tradeAmount = changes.tradeAmount {
+                transaction.tradeAmount = tradeAmount
+            }
+            if let tradeShare = changes.tradeShare {
+                transaction.tradeShare = tradeShare
+            }
+            if let nav = changes.nav {
+                transaction.nav = nav
+            }
+            if let note = changes.note {
+                transaction.note = note
+            }
+
+            try validateInvestmentInput(db, input: CreateInvestmentTransactionInput(
+                accountMonth: transaction.accountMonth,
+                occurredAt: transaction.occurredAt,
+                fundName: transaction.fundName,
+                transactionType: transaction.transactionType,
+                tradeAmount: transaction.tradeAmount,
+                tradeShare: transaction.tradeShare,
+                nav: transaction.nav,
+                note: transaction.note
+            ))
+            transaction.updatedAt = Date()
+            try persistInvestmentTransactionUpdate(db, transaction: transaction)
+
+            var affectedMonths = oldFundMonths
+            if original.fundName != transaction.fundName {
+                let oldRemainingMonths = try recalculateInvestmentLedger(db, fundName: original.fundName)
+                try reflowInvestmentFeedRecords(
+                    db,
+                    fundName: original.fundName,
+                    accountMonths: oldFundMonths.union(oldRemainingMonths)
+                )
+                affectedMonths.formUnion(oldRemainingMonths)
+            }
+
+            let newFundMonths = try recalculateInvestmentLedger(db, fundName: transaction.fundName)
+            let newReflowMonths = original.fundName == transaction.fundName
+                ? oldFundMonths.union(newFundMonths)
+                : newFundMonths
+            try reflowInvestmentFeedRecords(db, fundName: transaction.fundName, accountMonths: newReflowMonths)
+            affectedMonths.formUnion(newReflowMonths)
+
+            return (transaction: try requireInvestmentTransaction(db, id: id), affectedMonths: affectedMonths)
+        }
+
+        for month in result.affectedMonths.sorted() {
+            _ = try recalculateAccountMonth(month)
+        }
+        return result.transaction
+    }
+
+    public func deleteInvestmentTransaction(id: UUID) throws {
+        let affectedMonths = try database.writer.write { db in
+            let transaction = try requireInvestmentTransaction(db, id: id)
+            let oldFundMonths = Set(try fetchInvestmentTransactions(db, fundName: transaction.fundName).map(\.accountMonth))
+            try db.execute(sql: "DELETE FROM investment_transactions WHERE id = ?", arguments: [id.uuidString])
+            let remainingMonths = try recalculateInvestmentLedger(db, fundName: transaction.fundName)
+            let reflowMonths = oldFundMonths.union(remainingMonths)
+            try reflowInvestmentFeedRecords(db, fundName: transaction.fundName, accountMonths: reflowMonths)
+            return reflowMonths
+        }
+
+        for month in affectedMonths.sorted() {
+            _ = try recalculateAccountMonth(month)
+        }
+    }
+
     public func queryImportBatches() throws -> [ImportBatch] {
         try database.writer.read { db in
             try Row.fetchAll(db, sql: """
@@ -2278,13 +2366,6 @@ private func validateInvestmentInput(_ db: Database, input: CreateInvestmentTran
         }
         guard let share = input.tradeShare, share < 0 else {
             throw MingZhangError.validation("卖出交易份额必须小于 0")
-        }
-        let currentShare = try fetchInvestmentTransactions(db, fundName: fundName)
-            .filter { $0.occurredAt <= input.occurredAt }
-            .last?
-            .holdingShare ?? 0
-        guard currentShare + share >= 0 else {
-            throw MingZhangError.validation("卖出份额不能超过当前持仓")
         }
     case .nav:
         guard let nav = input.nav, nav > 0 else {
