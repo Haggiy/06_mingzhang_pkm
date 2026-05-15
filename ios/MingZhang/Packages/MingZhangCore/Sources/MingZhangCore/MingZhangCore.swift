@@ -508,11 +508,44 @@ public final class LedgerUseCases: @unchecked Sendable {
     }
 
     public func queryInvestmentTransactions(fundName: String? = nil) throws -> [InvestmentTransaction] {
-        []
+        try database.writer.read { db in
+            try fetchInvestmentTransactions(db, fundName: fundName)
+        }
     }
 
     public func queryInvestmentHoldings(accountMonth: String) throws -> [InvestmentHolding] {
         []
+    }
+
+    @discardableResult
+    public func createInvestmentTransaction(input: CreateInvestmentTransactionInput) throws -> InvestmentTransaction {
+        try database.writer.write { db in
+            try validateInvestmentInput(db, input: input)
+            let now = Date()
+            let transaction = InvestmentTransaction(
+                id: UUID(),
+                accountMonth: input.accountMonth,
+                occurredAt: input.occurredAt,
+                fundName: input.fundName.trimmingCharacters(in: .whitespacesAndNewlines),
+                transactionType: input.transactionType,
+                tradeAmount: input.tradeAmount,
+                tradeShare: input.tradeShare,
+                nav: input.nav,
+                note: input.note,
+                bookAmount: nil,
+                realizedGain: 0,
+                realizedLoss: 0,
+                holdingShare: 0,
+                averageCost: nil,
+                bookValue: 0,
+                presentValue: nil,
+                createdAt: now,
+                updatedAt: now
+            )
+            try insertInvestmentTransaction(db, transaction: transaction)
+            try recalculateInvestmentLedger(db, fundName: transaction.fundName)
+            return try requireInvestmentTransaction(db, id: transaction.id)
+        }
     }
 
     public func queryImportBatches() throws -> [ImportBatch] {
@@ -1408,6 +1441,54 @@ private func importCandidateArguments(
     ]
 }
 
+private func insertInvestmentTransaction(_ db: Database, transaction: InvestmentTransaction) throws {
+    try db.execute(sql: """
+        INSERT INTO investment_transactions (
+            id, account_month, occurred_at, fund_name, transaction_type,
+            trade_amount, trade_share, nav, note, book_amount, realized_gain,
+            realized_loss, holding_share, average_cost, book_value, present_value,
+            created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, arguments: investmentTransactionArguments(transaction))
+}
+
+private func persistInvestmentTransactionUpdate(_ db: Database, transaction: InvestmentTransaction) throws {
+    var arguments = investmentTransactionArguments(transaction)
+    arguments += [transaction.id.uuidString]
+    try db.execute(sql: """
+        UPDATE investment_transactions SET
+            id = ?, account_month = ?, occurred_at = ?, fund_name = ?, transaction_type = ?,
+            trade_amount = ?, trade_share = ?, nav = ?, note = ?, book_amount = ?,
+            realized_gain = ?, realized_loss = ?, holding_share = ?, average_cost = ?,
+            book_value = ?, present_value = ?, created_at = ?, updated_at = ?
+        WHERE id = ?
+        """, arguments: arguments)
+}
+
+private func investmentTransactionArguments(_ transaction: InvestmentTransaction) -> StatementArguments {
+    [
+        transaction.id.uuidString,
+        transaction.accountMonth,
+        encodeDate(transaction.occurredAt),
+        transaction.fundName,
+        transaction.transactionType.rawValue,
+        transaction.tradeAmount.map(encodeDecimal),
+        transaction.tradeShare.map(encodeDecimal),
+        transaction.nav.map(encodeDecimal),
+        transaction.note,
+        transaction.bookAmount.map(encodeDecimal),
+        encodeDecimal(transaction.realizedGain),
+        encodeDecimal(transaction.realizedLoss),
+        encodeDecimal(transaction.holdingShare),
+        transaction.averageCost.map(encodeDecimal),
+        encodeDecimal(transaction.bookValue),
+        transaction.presentValue.map(encodeDecimal),
+        encodeDate(transaction.createdAt),
+        encodeDate(transaction.updatedAt)
+    ]
+}
+
 private func insertJournalRecord(_ db: Database, record: JournalRecord) throws {
     try db.execute(sql: """
         INSERT INTO journal_records (
@@ -1477,6 +1558,76 @@ private func fetchSourceRecordsWithSemantics(_ db: Database, accountMonth: Strin
             paymentType: try requirePaymentType(db, id: record.paymentTypeId),
             paymentDetail: try requirePaymentDetail(db, id: record.paymentDetailId)
         )
+    }
+}
+
+private func fetchInvestmentTransactions(_ db: Database, fundName: String? = nil) throws -> [InvestmentTransaction] {
+    var sql = """
+        SELECT id, account_month, occurred_at, fund_name, transaction_type,
+               trade_amount, trade_share, nav, note, book_amount, realized_gain,
+               realized_loss, holding_share, average_cost, book_value, present_value,
+               created_at, updated_at
+        FROM investment_transactions
+        """
+    var arguments = StatementArguments()
+    if let fundName {
+        sql += " WHERE fund_name = ?"
+        arguments += [fundName]
+    }
+    sql += " ORDER BY occurred_at ASC, created_at ASC, id ASC"
+    return try Row.fetchAll(db, sql: sql, arguments: arguments).map(investmentTransaction(from:))
+}
+
+private func recalculateInvestmentLedger(_ db: Database, fundName: String) throws {
+    let transactions = try fetchInvestmentTransactions(db, fundName: fundName)
+    var holdingShare = Decimal(0)
+    var bookValue = Decimal(0)
+    var latestNav: Decimal?
+
+    for var transaction in transactions {
+        transaction.realizedGain = 0
+        transaction.realizedLoss = 0
+        transaction.bookAmount = nil
+
+        switch transaction.transactionType {
+        case .buy:
+            let amount = transaction.tradeAmount ?? 0
+            let share = transaction.tradeShare ?? 0
+            transaction.bookAmount = roundCurrency(amount)
+            holdingShare += share
+            bookValue += amount
+        case .sell:
+            let amount = transaction.tradeAmount ?? 0
+            let share = transaction.tradeShare ?? 0
+            guard holdingShare + share >= 0 else {
+                throw MingZhangError.validation("卖出份额不能超过当前持仓")
+            }
+            let averageCost = holdingShare == 0 ? Decimal(0) : bookValue / holdingShare
+            let bookAmount = roundCurrency(share * averageCost)
+            let realized = absoluteDecimal(amount) - absoluteDecimal(bookAmount)
+            transaction.bookAmount = bookAmount
+            if realized >= 0 {
+                transaction.realizedGain = roundCurrency(realized)
+            } else {
+                transaction.realizedLoss = roundCurrency(absoluteDecimal(realized))
+            }
+            holdingShare += share
+            bookValue += bookAmount
+        case .nav:
+            if let nav = transaction.nav {
+                latestNav = nav
+            }
+        }
+
+        if let nav = transaction.nav {
+            latestNav = nav
+        }
+        transaction.holdingShare = roundShare(holdingShare)
+        transaction.bookValue = roundCurrency(bookValue)
+        transaction.averageCost = holdingShare == 0 ? nil : roundUnitCost(bookValue / holdingShare)
+        transaction.presentValue = latestNav.map { roundCurrency(holdingShare * $0) }
+        transaction.updatedAt = Date()
+        try persistInvestmentTransactionUpdate(db, transaction: transaction)
     }
 }
 
@@ -1686,6 +1837,24 @@ private func requireJournalRecord(_ db: Database, id: UUID) throws -> JournalRec
     return try journalRecord(from: row)
 }
 
+private func requireInvestmentTransaction(_ db: Database, id: UUID) throws -> InvestmentTransaction {
+    guard let row = try Row.fetchOne(
+        db,
+        sql: """
+            SELECT id, account_month, occurred_at, fund_name, transaction_type,
+                   trade_amount, trade_share, nav, note, book_amount, realized_gain,
+                   realized_loss, holding_share, average_cost, book_value, present_value,
+                   created_at, updated_at
+            FROM investment_transactions
+            WHERE id = ?
+            """,
+        arguments: [id.uuidString]
+    ) else {
+        throw MingZhangError.investmentTransactionNotFound(id)
+    }
+    return try investmentTransaction(from: row)
+}
+
 private func requireImportBatch(_ db: Database, id: UUID) throws -> ImportBatch {
     guard let row = try Row.fetchOne(
         db,
@@ -1868,6 +2037,46 @@ private func validateRecordFields(
     }
 }
 
+private func validateInvestmentInput(_ db: Database, input: CreateInvestmentTransactionInput) throws {
+    try validateAccountMonth(input.accountMonth)
+    let fundName = input.fundName.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !fundName.isEmpty else {
+        throw MingZhangError.validation("基金标的名称不能为空")
+    }
+
+    switch input.transactionType {
+    case .buy:
+        guard let amount = input.tradeAmount, amount > 0 else {
+            throw MingZhangError.validation("买入交易金额必须大于 0")
+        }
+        guard let share = input.tradeShare, share > 0 else {
+            throw MingZhangError.validation("买入交易份额必须大于 0")
+        }
+    case .sell:
+        guard let amount = input.tradeAmount, amount < 0 else {
+            throw MingZhangError.validation("卖出交易金额必须小于 0")
+        }
+        guard let share = input.tradeShare, share < 0 else {
+            throw MingZhangError.validation("卖出交易份额必须小于 0")
+        }
+        let currentShare = try fetchInvestmentTransactions(db, fundName: fundName)
+            .filter { $0.occurredAt <= input.occurredAt }
+            .last?
+            .holdingShare ?? 0
+        guard currentShare + share >= 0 else {
+            throw MingZhangError.validation("卖出份额不能超过当前持仓")
+        }
+    case .nav:
+        guard let nav = input.nav, nav > 0 else {
+            throw MingZhangError.validation("净值记录必须填写大于 0 的单位净值")
+        }
+    }
+
+    if let nav = input.nav, nav <= 0 {
+        throw MingZhangError.validation("单位净值必须大于 0")
+    }
+}
+
 private func validateAccountMonth(_ accountMonth: String) throws {
     let parts = accountMonth.split(separator: "-", omittingEmptySubsequences: false)
     guard
@@ -1948,6 +2157,30 @@ private func importCandidate(from row: Row) throws -> ImportCandidateRecord {
     )
 }
 
+private func investmentTransaction(from row: Row) throws -> InvestmentTransaction {
+    let typeValue: String = row["transaction_type"]
+    return InvestmentTransaction(
+        id: try requireUUID(row["id"]),
+        accountMonth: row["account_month"],
+        occurredAt: try decodeDate(row["occurred_at"]),
+        fundName: row["fund_name"],
+        transactionType: InvestmentTransactionType(rawValue: typeValue) ?? .buy,
+        tradeAmount: decodeOptionalDecimal(row["trade_amount"]),
+        tradeShare: decodeOptionalDecimal(row["trade_share"]),
+        nav: decodeOptionalDecimal(row["nav"]),
+        note: row["note"],
+        bookAmount: decodeOptionalDecimal(row["book_amount"]),
+        realizedGain: decodeDecimal(row["realized_gain"]),
+        realizedLoss: decodeDecimal(row["realized_loss"]),
+        holdingShare: decodeDecimal(row["holding_share"]),
+        averageCost: decodeOptionalDecimal(row["average_cost"]),
+        bookValue: decodeDecimal(row["book_value"]),
+        presentValue: decodeOptionalDecimal(row["present_value"]),
+        createdAt: try decodeDate(row["created_at"]),
+        updatedAt: try decodeDate(row["updated_at"])
+    )
+}
+
 private func journalRecord(from row: Row) throws -> JournalRecord {
     let recordSource = RecordSource(rawValue: row["record_source"]) ?? .manual
     let engineFamilyValue: String? = row["engine_family"]
@@ -2007,6 +2240,30 @@ private func encodeDecimal(_ value: Decimal) -> String {
 
 private func decodeDecimal(_ value: String) -> Decimal {
     Decimal(string: value, locale: Locale(identifier: "en_US_POSIX")) ?? Decimal(0)
+}
+
+private func decodeOptionalDecimal(_ value: String?) -> Decimal? {
+    guard let value, !value.isEmpty else { return nil }
+    return Decimal(string: value, locale: Locale(identifier: "en_US_POSIX"))
+}
+
+private func roundCurrency(_ value: Decimal) -> Decimal {
+    roundDecimal(value, scale: 2)
+}
+
+private func roundShare(_ value: Decimal) -> Decimal {
+    roundDecimal(value, scale: 6)
+}
+
+private func roundUnitCost(_ value: Decimal) -> Decimal {
+    roundDecimal(value, scale: 6)
+}
+
+private func roundDecimal(_ value: Decimal, scale: Int) -> Decimal {
+    var input = value
+    var output = Decimal()
+    NSDecimalRound(&output, &input, scale, .plain)
+    return output
 }
 
 private func encodeUUIDList(_ values: [UUID]) -> String {
