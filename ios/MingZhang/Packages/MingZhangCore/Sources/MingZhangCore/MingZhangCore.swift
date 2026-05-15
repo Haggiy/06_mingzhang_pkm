@@ -430,6 +430,9 @@ public final class LedgerUseCases: @unchecked Sendable {
 
             let type = try insertPaymentTypeIfNeeded(db, name: "生活必要开支", element: .expense, now: now)
             try insertPaymentDetailIfNeeded(db, name: "伙食费", paymentTypeId: type.id, now: now)
+
+            let entertainmentType = try insertPaymentTypeIfNeeded(db, name: "文娱游购开支", element: .expense, now: now)
+            try insertPaymentDetailIfNeeded(db, name: "饮食游乐费", paymentTypeId: entertainmentType.id, now: now)
         }
     }
 

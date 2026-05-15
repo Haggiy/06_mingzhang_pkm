@@ -897,16 +897,25 @@ final class P1ImportFlowTests: XCTestCase {
     ) throws {
         try database.writer.write { db in
             let now = ISO8601DateFormatter().string(from: Date())
-            let typeId = UUID().uuidString
-            let detailId = UUID().uuidString
-            try db.execute(sql: """
-                INSERT INTO payment_types (id, name, element, is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """, arguments: [typeId, typeName, AccountingElement.expense.rawValue, true, now, now])
-            try db.execute(sql: """
-                INSERT INTO payment_details (id, name, payment_type_id, is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """, arguments: [detailId, detailName, typeId, true, now, now])
+            // 查询或插入 type（种子数据可能已存在同名 type）
+            let typeId: String
+            if let existing = try? Row.fetchOne(db, sql: "SELECT id FROM payment_types WHERE name = ?", arguments: [typeName]) {
+                typeId = existing["id"]
+            } else {
+                typeId = UUID().uuidString
+                try db.execute(sql: """
+                    INSERT INTO payment_types (id, name, element, is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """, arguments: [typeId, typeName, AccountingElement.expense.rawValue, true, now, now])
+            }
+            // 查询或插入 detail
+            if (try? Row.fetchOne(db, sql: "SELECT id FROM payment_details WHERE name = ? AND payment_type_id = ?", arguments: [detailName, typeId])) == nil {
+                let detailId = UUID().uuidString
+                try db.execute(sql: """
+                    INSERT INTO payment_details (id, name, payment_type_id, is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """, arguments: [detailId, detailName, typeId, true, now, now])
+            }
         }
     }
 }

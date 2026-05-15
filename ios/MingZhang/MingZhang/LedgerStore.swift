@@ -4,6 +4,11 @@ import MingZhangCore
 
 @MainActor
 final class LedgerStore: ObservableObject {
+    private let useInMemory: Bool
+
+    init(useInMemory: Bool = false) {
+        self.useInMemory = useInMemory
+    }
     @Published private(set) var accountMonth = "2026-04"
     @Published private(set) var availableAccountMonths: [String] = ["2026-04"]
     @Published private(set) var journalFilter = JournalRecordFilter(accountMonths: ["2026-04"])
@@ -25,14 +30,54 @@ final class LedgerStore: ObservableObject {
 
     func bootstrap() async {
         do {
-            let databaseURL = try Self.databaseURL()
-            let database = try LedgerDatabase.fileBacked(at: databaseURL)
+            let database: LedgerDatabase
+            if useInMemory {
+                database = try LedgerDatabase.inMemory()
+            } else {
+                let databaseURL = try Self.databaseURL()
+                database = try LedgerDatabase.fileBacked(at: databaseURL)
+            }
             let useCases = LedgerUseCases(database: database)
             try useCases.initializeLedgerSeed()
             self.useCases = useCases
             try refresh()
+            try processUITestSetup()
         } catch {
             lastError = error.localizedDescription
+        }
+    }
+
+    /// 处理 UITest 环境变量注入的设置数据
+    private func processUITestSetup() throws {
+        guard useInMemory else { return }
+        guard let useCases else { return }
+        let env = ProcessInfo.processInfo.environment
+
+        // 处理多步设置导入（MZ_SETUP_0_CSV, MZ_SETUP_1_CSV, ...）
+        var stepIndex = 0
+        while let csv = env["MZ_SETUP_\(stepIndex)_CSV"] {
+            let sourceStr = env["MZ_SETUP_\(stepIndex)_SOURCE"] ?? "alipay"
+            let typeName = env["MZ_SETUP_\(stepIndex)_TYPE"]
+            let detailName = env["MZ_SETUP_\(stepIndex)_DETAIL"]
+            let source: ImportSource = sourceStr == "wechat" ? .wechat : .alipay
+
+            let batch = try useCases.createImportBatch(source: source, fileName: "setup-\(stepIndex).csv", contents: csv)
+            if let candidate = batch.candidates.first, let typeName, let detailName {
+                _ = try useCases.updateImportCandidate(id: candidate.id, changes: ImportCandidateChanges(
+                    paymentMethodName: candidate.paymentMethodName,
+                    paymentTypeName: typeName,
+                    paymentDetailName: detailName
+                ))
+                _ = try useCases.confirmImportCandidates(ids: [candidate.id])
+            }
+            stepIndex += 1
+        }
+
+        // 处理待验证的测试导入（通过 store 方法确保所有状态正确更新）
+        if let testCSV = env["MZ_TEST_CSV"] {
+            let sourceStr = env["MZ_TEST_SOURCE"] ?? "alipay"
+            let source: ImportSource = sourceStr == "wechat" ? .wechat : .alipay
+            _ = createImportBatch(source: source, fileName: "test.csv", contents: testCSV)
         }
     }
 

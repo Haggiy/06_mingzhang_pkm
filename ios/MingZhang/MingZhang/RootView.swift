@@ -1,6 +1,7 @@
 import SwiftUI
 import MingZhangCore
 import UniformTypeIdentifiers
+import UIKit
 
 struct RootView: View {
     @EnvironmentObject private var store: LedgerStore
@@ -118,6 +119,7 @@ struct HomeView: View {
                         Label(store.accountMonth, systemImage: "calendar")
                             .labelStyle(.titleAndIcon)
                     }
+                    .accessibilityIdentifier("btn_month_picker")
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -125,6 +127,7 @@ struct HomeView: View {
                     } label: {
                         Label("记一笔", systemImage: "plus")
                     }
+                    .accessibilityIdentifier("btn_new_record")
                 }
             }
             .sheet(isPresented: $isShowingForm) {
@@ -206,6 +209,7 @@ struct JournalView: View {
                     } label: {
                         Label("记一笔", systemImage: "plus")
                     }
+                    .accessibilityIdentifier("btn_new_record_journal")
                 }
             }
             .sheet(isPresented: $isShowingForm) {
@@ -392,11 +396,13 @@ struct ImportSourcePickerView: View {
                     } label: {
                         Label("支付宝账单", systemImage: "creditcard")
                     }
+                    .accessibilityIdentifier("import-source-alipay")
                     NavigationLink {
                         ImportCandidateListView(source: .wechat)
                     } label: {
                         Label("微信账单", systemImage: "message")
                     }
+                    .accessibilityIdentifier("import-source-wechat")
                 }
             }
             .navigationTitle("导入账单")
@@ -461,14 +467,29 @@ struct ImportCandidateListView: View {
                             }
                             .buttonStyle(.plain)
                             .disabled(candidate.status != .pending)
+                            .accessibilityIdentifier("import-candidate-checkbox-\(candidate.id.uuidString.prefix(8))")
 
                             NavigationLink {
                                 ImportCandidateEditView(candidate: candidate)
                             } label: {
                                 ImportCandidateRow(candidate: candidate)
                             }
+                            .accessibilityIdentifier("import-candidate-nav-\(candidate.id.uuidString.prefix(8))")
                         }
                     }
+                }
+            }
+
+            if ProcessInfo.processInfo.arguments.contains("--uitesting") {
+                Section("测试工具") {
+                    Button {
+                        if let csv = UIPasteboard.general.string {
+                            _ = store.createImportBatch(source: source, fileName: "uitest-import.csv", contents: csv)
+                        }
+                    } label: {
+                        Label("从剪贴板导入", systemImage: "doc.on.clipboard")
+                    }
+                    .accessibilityIdentifier("import-clipboard-btn")
                 }
             }
         }
@@ -480,12 +501,14 @@ struct ImportCandidateListView: View {
                 } label: {
                     Label("选择文件", systemImage: "doc.badge.plus")
                 }
+                .accessibilityIdentifier("import-file-picker-btn")
                 Button {
                     isShowingBatchEdit = true
                 } label: {
                     Label("批量整理", systemImage: "slider.horizontal.3")
                 }
                 .disabled(store.selectedImportCandidateIds.isEmpty)
+                .accessibilityIdentifier("import-batch-edit-btn")
             }
             ToolbarItemGroup(placement: .bottomBar) {
                 Button {
@@ -494,6 +517,7 @@ struct ImportCandidateListView: View {
                     Label("全选", systemImage: "checkmark.circle")
                 }
                 .disabled(pendingCandidates.isEmpty)
+                .accessibilityIdentifier("import-select-all-btn")
 
                 Button(role: .destructive) {
                     _ = store.ignoreSelectedImportCandidates()
@@ -501,6 +525,7 @@ struct ImportCandidateListView: View {
                     Label("忽略", systemImage: "eye.slash")
                 }
                 .disabled(store.selectedImportCandidateIds.isEmpty)
+                .accessibilityIdentifier("import-ignore-btn")
 
                 Spacer()
 
@@ -512,6 +537,7 @@ struct ImportCandidateListView: View {
                     Label("确认进入流水", systemImage: "checkmark")
                 }
                 .disabled(store.selectedImportCandidateIds.isEmpty)
+                .accessibilityIdentifier("import-confirm-btn")
             }
         }
         .fileImporter(
@@ -589,6 +615,7 @@ struct ImportCandidateRow: View {
             Text("\(candidate.paymentMethodName ?? "未设置") / \(candidate.paymentTypeName ?? "未设置") / \(candidate.paymentDetailName ?? "未设置")")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .accessibilityIdentifier("import-candidate-classification-\(candidate.id.uuidString.prefix(8))")
             Text("\(candidate.status.displayName) / 原始第 \(candidate.rawLineNumber) 行")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -636,12 +663,14 @@ struct ImportCandidateEditView: View {
                         Text(type.name).tag(type.name)
                     }
                 }
+                .accessibilityIdentifier("candidate-edit-type-picker")
                 Picker("类型明细", selection: $paymentDetailName) {
                     Text("未选择").tag("")
                     ForEach(availableDetails) { detail in
                         Text(detail.name).tag(detail.name)
                     }
                 }
+                .accessibilityIdentifier("candidate-edit-detail-picker")
                 TextField("备注", text: $note, axis: .vertical)
             }
 
@@ -665,6 +694,7 @@ struct ImportCandidateEditView: View {
                     }
                 }
                 .disabled(candidate.status != .pending)
+                .accessibilityIdentifier("candidate-edit-save-btn")
             }
         }
         .onChange(of: paymentTypeName) {
@@ -807,25 +837,32 @@ struct JournalFormView: View {
             Section("账目") {
                 TextField("账月", text: $input.accountMonth)
                     .textInputAutocapitalization(.never)
+                    .accessibilityIdentifier("field_account_month")
                 DatePicker("时间", selection: $input.occurredAt)
+                    .accessibilityIdentifier("picker_occurred_at")
                 Picker("收付手段", selection: $input.paymentMethodName) {
                     ForEach(store.methods) { method in
                         Text(method.name).tag(method.name)
                     }
                 }
+                .accessibilityIdentifier("picker_payment_method")
                 TextField("金额", text: $input.amountText)
                     .keyboardType(.decimalPad)
+                    .accessibilityIdentifier("field_amount")
                     Picker("收付类型", selection: $input.paymentTypeName) {
                         ForEach(store.types) { type in
                             Text(type.name).tag(type.name)
                         }
                     }
+                    .accessibilityIdentifier("picker_payment_type")
                     Picker("类型明细", selection: $input.paymentDetailName) {
                         ForEach(availableDetails) { detail in
                             Text(detail.name).tag(detail.name)
                         }
                     }
+                    .accessibilityIdentifier("picker_payment_detail")
                 TextField("备注", text: $input.note, axis: .vertical)
+                    .accessibilityIdentifier("field_note")
             }
 
             if case .edit(let record) = mode, record.recordSource == .import {
@@ -837,6 +874,7 @@ struct JournalFormView: View {
                     Button("删除记录", role: .destructive) {
                         isShowingDeleteConfirmation = true
                     }
+                    .accessibilityIdentifier("btn_delete_record")
                 }
             }
         }
@@ -846,6 +884,7 @@ struct JournalFormView: View {
                 Button("取消") {
                     dismiss()
                 }
+                .accessibilityIdentifier("btn_cancel")
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("保存") {
@@ -854,6 +893,7 @@ struct JournalFormView: View {
                     }
                 }
                 .disabled(!isEditableRecord)
+                .accessibilityIdentifier("btn_save")
             }
         }
         .confirmationDialog("确认删除记录？", isPresented: $isShowingDeleteConfirmation, titleVisibility: .visible) {
@@ -1244,6 +1284,7 @@ struct JournalRecordRow: View {
             }
         }
         .padding(.vertical, 4)
+        .accessibilityIdentifier("journal_record_row_\(record.id.uuidString.prefix(8))")
     }
 }
 
