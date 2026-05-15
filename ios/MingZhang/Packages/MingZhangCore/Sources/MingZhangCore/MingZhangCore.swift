@@ -8,6 +8,7 @@ import GRDB
 public enum MingZhangError: Error, Equatable, LocalizedError {
     case missingSeed(String)
     case recordNotFound(UUID)
+    case investmentTransactionNotFound(UUID)
     case recordNotEditable(UUID)
     case invalidDate(String)
     case validation(String)
@@ -18,6 +19,8 @@ public enum MingZhangError: Error, Equatable, LocalizedError {
             "缺少默认配置：\(value)"
         case .recordNotFound(let id):
             "找不到流水记录：\(id.uuidString)"
+        case .investmentTransactionNotFound(let id):
+            "找不到投资交易：\(id.uuidString)"
         case .recordNotEditable:
             "这条记录由系统生成或回填，不能直接编辑或删除"
         case .invalidDate(let value):
@@ -119,6 +122,7 @@ public struct JournalRecord: Equatable, Identifiable, Sendable {
     public var engineKey: String?
     public var objectKey: String?
     public var sourceRecordIds: [UUID]
+    public var sourceInvestmentTransactionIds: [UUID]
     public var sourceImportBatchId: UUID?
     public var sourceImportCandidateId: UUID?
     public var createdAt: Date
@@ -409,6 +413,34 @@ public final class LedgerDatabase: @unchecked Sendable {
             try db.create(index: "idx_import_candidates_transaction", on: "import_candidates", columns: ["raw_transaction_id"])
             try db.create(index: "idx_import_candidates_fingerprint", on: "import_candidates", columns: ["raw_fingerprint"])
         }
+        migrator.registerMigration("v3_p1_investment") { db in
+            try db.alter(table: "journal_records") { table in
+                table.add(column: "source_investment_transaction_ids", .text)
+                    .notNull()
+                    .defaults(to: "")
+            }
+
+            try db.create(table: "investment_transactions", ifNotExists: true) { table in
+                table.column("id", .text).primaryKey()
+                table.column("account_month", .text).notNull().indexed()
+                table.column("occurred_at", .text).notNull().indexed()
+                table.column("fund_name", .text).notNull().indexed()
+                table.column("transaction_type", .text).notNull()
+                table.column("trade_amount", .text)
+                table.column("trade_share", .text)
+                table.column("nav", .text)
+                table.column("note", .text)
+                table.column("book_amount", .text)
+                table.column("realized_gain", .text).notNull()
+                table.column("realized_loss", .text).notNull()
+                table.column("holding_share", .text).notNull()
+                table.column("average_cost", .text)
+                table.column("book_value", .text).notNull()
+                table.column("present_value", .text)
+                table.column("created_at", .text).notNull()
+                table.column("updated_at", .text).notNull()
+            }
+        }
         return migrator
     }
 }
@@ -433,6 +465,15 @@ public final class LedgerUseCases: @unchecked Sendable {
 
             let entertainmentType = try insertPaymentTypeIfNeeded(db, name: "文娱游购开支", element: .expense, now: now)
             try insertPaymentDetailIfNeeded(db, name: "饮食游乐费", paymentTypeId: entertainmentType.id, now: now)
+
+            let assetInvestmentType = try insertPaymentTypeIfNeeded(db, name: "资产类支出", element: .asset, now: now)
+            try insertPaymentDetailIfNeeded(db, name: "金融资产投资", paymentTypeId: assetInvestmentType.id, now: now)
+
+            let investmentIncomeType = try insertPaymentTypeIfNeeded(db, name: "理财收入", element: .income, now: now)
+            try insertPaymentDetailIfNeeded(db, name: "投资收益", paymentTypeId: investmentIncomeType.id, now: now)
+
+            let financeExpenseType = try insertPaymentTypeIfNeeded(db, name: "财务费用开支", element: .expense, now: now)
+            try insertPaymentDetailIfNeeded(db, name: "投资亏损", paymentTypeId: financeExpenseType.id, now: now)
         }
     }
 
@@ -464,6 +505,14 @@ public final class LedgerUseCases: @unchecked Sendable {
                 ORDER BY name
                 """).map(paymentDetail(from:))
         }
+    }
+
+    public func queryInvestmentTransactions(fundName: String? = nil) throws -> [InvestmentTransaction] {
+        []
+    }
+
+    public func queryInvestmentHoldings(accountMonth: String) throws -> [InvestmentHolding] {
+        []
     }
 
     public func queryImportBatches() throws -> [ImportBatch] {
@@ -675,6 +724,7 @@ public final class LedgerUseCases: @unchecked Sendable {
                     engineKey: nil,
                     objectKey: nil,
                     sourceRecordIds: [],
+                    sourceInvestmentTransactionIds: [],
                     sourceImportBatchId: candidate.batchId,
                     sourceImportCandidateId: candidate.id,
                     createdAt: now,
@@ -760,6 +810,7 @@ public final class LedgerUseCases: @unchecked Sendable {
                 engineKey: nil,
                 objectKey: nil,
                 sourceRecordIds: [],
+                sourceInvestmentTransactionIds: [],
                 sourceImportBatchId: nil,
                 sourceImportCandidateId: nil,
                 createdAt: now,
@@ -1168,6 +1219,7 @@ private let selectJournalRecordSQL = """
         journal_records.engine_key,
         journal_records.object_key,
         journal_records.source_record_ids,
+        journal_records.source_investment_transaction_ids,
         journal_records.source_import_batch_id,
         journal_records.source_import_candidate_id,
         journal_records.created_at,
@@ -1362,9 +1414,10 @@ private func insertJournalRecord(_ db: Database, record: JournalRecord) throws {
             id, account_month, occurred_at, payment_method_id, amount, payment_type_id,
             payment_detail_id, note, record_source, record_kind, carry_forward_role,
             engine_family, engine_key, object_key, source_record_ids,
-            source_import_batch_id, source_import_candidate_id, created_at, updated_at
+            source_investment_transaction_ids, source_import_batch_id,
+            source_import_candidate_id, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, arguments: journalRecordArguments(record))
 }
 
@@ -1376,8 +1429,9 @@ private func persistJournalRecordUpdate(_ db: Database, record: JournalRecord) t
             id = ?, account_month = ?, occurred_at = ?, payment_method_id = ?, amount = ?,
             payment_type_id = ?, payment_detail_id = ?, note = ?, record_source = ?,
             record_kind = ?, carry_forward_role = ?, engine_family = ?, engine_key = ?,
-            object_key = ?, source_record_ids = ?, source_import_batch_id = ?,
-            source_import_candidate_id = ?, created_at = ?, updated_at = ?
+            object_key = ?, source_record_ids = ?, source_investment_transaction_ids = ?,
+            source_import_batch_id = ?, source_import_candidate_id = ?, created_at = ?,
+            updated_at = ?
         WHERE id = ?
         """, arguments: arguments)
 }
@@ -1399,6 +1453,7 @@ private func journalRecordArguments(_ record: JournalRecord) -> StatementArgumen
         record.engineKey,
         record.objectKey,
         encodeUUIDList(record.sourceRecordIds),
+        encodeUUIDList(record.sourceInvestmentTransactionIds),
         record.sourceImportBatchId?.uuidString,
         record.sourceImportCandidateId?.uuidString,
         encodeDate(record.createdAt),
@@ -1516,6 +1571,7 @@ private func makeEngineRecord(
         engineKey: draft.engineKey,
         objectKey: draft.objectKey,
         sourceRecordIds: draft.sourceRecordIds,
+        sourceInvestmentTransactionIds: [],
         sourceImportBatchId: nil,
         sourceImportCandidateId: nil,
         createdAt: createdAt,
@@ -1915,6 +1971,7 @@ private func journalRecord(from row: Row) throws -> JournalRecord {
         engineKey: row["engine_key"],
         objectKey: row["object_key"],
         sourceRecordIds: decodeUUIDList(row["source_record_ids"]),
+        sourceInvestmentTransactionIds: decodeUUIDList(row["source_investment_transaction_ids"]),
         sourceImportBatchId: optionalUUID(row["source_import_batch_id"]),
         sourceImportCandidateId: optionalUUID(row["source_import_candidate_id"]),
         createdAt: try decodeDate(row["created_at"]),
