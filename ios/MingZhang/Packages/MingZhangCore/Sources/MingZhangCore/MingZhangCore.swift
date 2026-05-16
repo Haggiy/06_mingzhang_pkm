@@ -526,6 +526,58 @@ public final class LedgerUseCases: @unchecked Sendable {
         }
     }
 
+    public func queryInvestmentMonthlySummary(accountMonth: String, fundName: String? = nil) throws -> InvestmentMonthlySummary {
+        try database.writer.read { db in
+            try validateAccountMonth(accountMonth)
+            let transactions = try fetchInvestmentTransactions(db, fundName: fundName)
+                .filter { $0.accountMonth == accountMonth }
+            let holdings = try fetchInvestmentHoldings(db, accountMonth: accountMonth)
+                .filter { holding in
+                    fundName.map { holding.fundName == $0 } ?? true
+                }
+            let feedRecords = try fetchInvestmentFeedRecords(db, accountMonth: accountMonth, fundName: fundName)
+
+            return InvestmentMonthlySummary(
+                accountMonth: accountMonth,
+                fundName: fundName,
+                buyBookAmount: transactions
+                    .filter { $0.transactionType == .buy }
+                    .reduce(Decimal(0)) { $0 + ($1.bookAmount ?? 0) },
+                sellBookAmount: transactions
+                    .filter { $0.transactionType == .sell }
+                    .reduce(Decimal(0)) { $0 + ($1.bookAmount ?? 0) },
+                realizedGain: transactions.reduce(Decimal(0)) { $0 + $1.realizedGain },
+                realizedLoss: transactions.reduce(Decimal(0)) { $0 + $1.realizedLoss },
+                endingBookValue: holdings.reduce(Decimal(0)) { $0 + $1.bookValue },
+                endingShare: holdings.reduce(Decimal(0)) { $0 + $1.holdingShare },
+                feedJournalRecordIds: feedRecords.map(\.id).sorted { $0.uuidString < $1.uuidString },
+                sourceTransactionIds: transactions.map(\.id).sorted { $0.uuidString < $1.uuidString }
+            )
+        }
+    }
+
+    public func queryInvestmentFeedRecords(accountMonth: String, fundName: String? = nil) throws -> [JournalRecord] {
+        try database.writer.read { db in
+            try fetchInvestmentFeedRecords(db, accountMonth: accountMonth, fundName: fundName)
+        }
+    }
+
+    public func getInvestmentFeedTrace(recordId: UUID) throws -> InvestmentFeedTrace? {
+        try database.writer.read { db in
+            let record = try requireJournalRecord(db, id: recordId)
+            guard
+                record.recordSource == .investmentFeed,
+                !record.sourceInvestmentTransactionIds.isEmpty
+            else {
+                return nil
+            }
+            return InvestmentFeedTrace(
+                journalRecord: record,
+                transactions: try fetchInvestmentTransactions(db, ids: record.sourceInvestmentTransactionIds)
+            )
+        }
+    }
+
     @discardableResult
     public func createInvestmentTransaction(input: CreateInvestmentTransactionInput) throws -> InvestmentTransaction {
         let result = try database.writer.write { db in
@@ -1700,6 +1752,44 @@ private func fetchInvestmentTransactions(_ db: Database, fundName: String? = nil
     return try Row.fetchAll(db, sql: sql, arguments: arguments).map(investmentTransaction(from:))
 }
 
+private func fetchInvestmentTransactions(_ db: Database, ids: [UUID]) throws -> [InvestmentTransaction] {
+    guard !ids.isEmpty else { return [] }
+    let rows = try Row.fetchAll(db, sql: """
+        SELECT id, account_month, occurred_at, fund_name, transaction_type,
+               trade_amount, trade_share, nav, note, book_amount, realized_gain,
+               realized_loss, holding_share, average_cost, book_value, present_value,
+               created_at, updated_at
+        FROM investment_transactions
+        WHERE id IN \(sqlPlaceholders(ids.count))
+        """, arguments: StatementArguments(ids.map(\.uuidString)))
+        .map(investmentTransaction(from:))
+    let transactionsById = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+    return ids.compactMap { transactionsById[$0] }
+}
+
+private func fetchInvestmentFeedRecords(
+    _ db: Database,
+    accountMonth: String,
+    fundName: String? = nil
+) throws -> [JournalRecord] {
+    try validateAccountMonth(accountMonth)
+    var sql = """
+        \(selectJournalRecordSQL)
+        WHERE journal_records.account_month = ?
+          AND journal_records.record_source = ?
+        """
+    var arguments: StatementArguments = [
+        accountMonth,
+        RecordSource.investmentFeed.rawValue
+    ]
+    if let fundName {
+        sql += " AND journal_records.object_key = ?"
+        arguments += ["investment:\(fundName)"]
+    }
+    sql += " ORDER BY journal_records.occurred_at ASC, journal_records.created_at ASC"
+    return try Row.fetchAll(db, sql: sql, arguments: arguments).map(journalRecord(from:))
+}
+
 private func recalculateInvestmentLedger(_ db: Database, fundName: String) throws -> Set<String> {
     let transactions = try fetchInvestmentTransactions(db, fundName: fundName)
     let affectedMonths = Set(transactions.map(\.accountMonth))
@@ -1757,9 +1847,9 @@ private func recalculateInvestmentLedger(_ db: Database, fundName: String) throw
 }
 
 private func fetchInvestmentHoldings(_ db: Database, accountMonth: String) throws -> [InvestmentHolding] {
-    let monthEnd = monthEndPlaceholder(accountMonth)
+    try validateAccountMonth(accountMonth)
     let transactions = try fetchInvestmentTransactions(db)
-        .filter { $0.occurredAt <= monthEnd }
+        .filter { $0.accountMonth <= accountMonth }
     let grouped = Dictionary(grouping: transactions) { $0.fundName }
 
     return grouped.keys.sorted().compactMap { fundName in

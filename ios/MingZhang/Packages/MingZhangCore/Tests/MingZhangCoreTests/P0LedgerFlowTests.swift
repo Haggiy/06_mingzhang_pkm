@@ -398,7 +398,7 @@ final class P0LedgerFlowTests: XCTestCase {
         let useCases = LedgerUseCases(database: database)
         try useCases.initializeLedgerSeed()
 
-        let record = try useCases.createManualRecord(input: sampleInput(amount: Decimal(100)))
+        _ = try useCases.createManualRecord(input: sampleInput(amount: Decimal(100)))
         let engineRecord = try XCTUnwrap(try useCases.queryJournalRecords(
             filter: JournalRecordFilter(accountMonths: ["2026-04"], includeEngineRecords: true)
         ).first { $0.recordSource == .engine })
@@ -413,21 +413,34 @@ final class P0LedgerFlowTests: XCTestCase {
             XCTAssertEqual(error as? MingZhangError, .recordNotEditable(engineRecord.id))
         }
 
-        try database.writer.write { db in
-            try db.execute(
-                sql: "UPDATE journal_records SET record_source = ? WHERE id = ?",
-                arguments: [RecordSource.investmentFeed.rawValue, record.id.uuidString]
-            )
-        }
+        _ = try useCases.createInvestmentTransaction(input: CreateInvestmentTransactionInput(
+            accountMonth: "2026-03",
+            occurredAt: try Date.iso8601("2026-03-10T00:00:00Z"),
+            fundName: "沪深300指数A",
+            transactionType: .buy,
+            tradeAmount: Decimal(300),
+            tradeShare: Decimal(200)
+        ))
+        _ = try useCases.createInvestmentTransaction(input: CreateInvestmentTransactionInput(
+            accountMonth: "2026-04",
+            occurredAt: try Date.iso8601("2026-04-10T00:00:00Z"),
+            fundName: "沪深300指数A",
+            transactionType: .sell,
+            tradeAmount: Decimal(-120),
+            tradeShare: Decimal(-100)
+        ))
+        let feedRecord = try XCTUnwrap(try useCases.queryJournalRecords(
+            filter: JournalRecordFilter(accountMonths: ["2026-04"], includeEngineRecords: true)
+        ).first { $0.recordSource == .investmentFeed })
 
         XCTAssertThrowsError(try useCases.updateJournalRecord(
-            id: record.id,
+            id: feedRecord.id,
             changes: JournalRecordChanges(amount: Decimal(120))
         )) { error in
-            XCTAssertEqual(error as? MingZhangError, .recordNotEditable(record.id))
+            XCTAssertEqual(error as? MingZhangError, .recordNotEditable(feedRecord.id))
         }
-        XCTAssertThrowsError(try useCases.deleteJournalRecord(id: record.id)) { error in
-            XCTAssertEqual(error as? MingZhangError, .recordNotEditable(record.id))
+        XCTAssertThrowsError(try useCases.deleteJournalRecord(id: feedRecord.id)) { error in
+            XCTAssertEqual(error as? MingZhangError, .recordNotEditable(feedRecord.id))
         }
     }
 

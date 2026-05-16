@@ -142,6 +142,53 @@ final class P1InvestmentLedgerTests: XCTestCase {
         XCTAssertTrue(feedRecords.isEmpty)
         XCTAssertEqual(try useCases.queryBalanceSummary(accountMonth: "2026-04").investmentItems.first?.amount, Decimal(300))
     }
+
+    func testInvestmentReadModelsAndFeedTraceExposeSourceTransactions() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        let buy = try useCases.createInvestmentTransaction(input: investmentInput(
+            accountMonth: "2026-03",
+            occurredAt: "2026-03-10T00:00:00Z",
+            type: .buy,
+            amount: Decimal(300),
+            share: Decimal(200),
+            nav: Decimal(string: "1.50")!
+        ))
+        let sell = try useCases.createInvestmentTransaction(input: investmentInput(
+            accountMonth: "2026-04",
+            occurredAt: "2026-04-10T00:00:00Z",
+            type: .sell,
+            amount: Decimal(-180),
+            share: Decimal(-100)
+        ))
+        _ = try useCases.createInvestmentTransaction(input: investmentInput(
+            accountMonth: "2026-04",
+            occurredAt: "2026-04-30T00:00:00Z",
+            type: .nav,
+            nav: Decimal(string: "1.80")!,
+            note: "月末净值"
+        ))
+
+        let holdings = try useCases.queryInvestmentHoldings(accountMonth: "2026-04")
+        XCTAssertEqual(holdings.map(\.fundName), ["沪深300指数A"])
+        XCTAssertEqual(holdings.first?.holdingShare, Decimal(100))
+        XCTAssertEqual(holdings.first?.bookValue, Decimal(150))
+        XCTAssertEqual(holdings.first?.presentValue, Decimal(180))
+        XCTAssertEqual(holdings.first?.unrealizedGain, Decimal(30))
+        XCTAssertEqual(holdings.first?.sourceTransactionIds.sorted { $0.uuidString < $1.uuidString }, [buy.id, sell.id].sorted { $0.uuidString < $1.uuidString })
+
+        let summary = try useCases.queryInvestmentMonthlySummary(accountMonth: "2026-04", fundName: "沪深300指数A")
+        XCTAssertEqual(summary.sellBookAmount, Decimal(-150))
+        XCTAssertEqual(summary.realizedGain, Decimal(30))
+        XCTAssertEqual(summary.realizedLoss, Decimal(0))
+        XCTAssertEqual(summary.endingBookValue, Decimal(150))
+
+        let feed = try XCTUnwrap(try useCases.queryInvestmentFeedRecords(accountMonth: "2026-04", fundName: "沪深300指数A").first)
+        let trace = try XCTUnwrap(try useCases.getInvestmentFeedTrace(recordId: feed.id))
+        XCTAssertEqual(trace.transactions.map(\.id), [sell.id])
+    }
 }
 
 private func investmentInput(
