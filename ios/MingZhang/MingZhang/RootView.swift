@@ -1181,26 +1181,46 @@ struct SourceRecordsView: View {
 
 struct InvestmentFundListView: View {
     @EnvironmentObject private var store: LedgerStore
+    @State private var selectedFundName: String?
 
     var body: some View {
         List {
             Section("基金标的") {
                 ForEach(store.investmentHoldings) { holding in
-                    NavigationLink {
-                        InvestmentLedgerView(fundName: holding.fundName)
+                    Button {
+                        selectedFundName = holding.fundName
                     } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            SummaryRow(title: holding.fundName, value: holding.bookValue)
-                            Text("份额 \(holding.holdingShare.mingZhangAmountText)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                SummaryRow(title: holding.fundName, value: holding.bookValue)
+                                Text("份额 \(holding.holdingShare.mingZhangAmountText)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.tertiary)
                         }
                     }
+                    .buttonStyle(.plain)
                     .accessibilityIdentifier("investment_fund_row_\(holding.fundName)")
                 }
             }
         }
         .navigationTitle("基金投资")
+        .navigationDestination(isPresented: Binding(
+            get: { selectedFundName != nil },
+            set: { isPresented in
+                if !isPresented {
+                    selectedFundName = nil
+                }
+            }
+        )) {
+            if let selectedFundName {
+                InvestmentLedgerView(fundName: selectedFundName)
+            }
+        }
     }
 }
 
@@ -1214,6 +1234,11 @@ struct InvestmentLedgerView: View {
 
     var body: some View {
         List {
+            Section("标的") {
+                Text(fundName)
+                    .accessibilityIdentifier("investment_ledger_fund_name")
+            }
+
             if let holding {
                 Section("持仓") {
                     SummaryRow(title: "账面价值", value: holding.bookValue)
@@ -1269,6 +1294,12 @@ struct InvestmentLedgerView: View {
             }
         }
         .onAppear(perform: loadData)
+        .onChange(of: store.investmentHoldings.map(\.id)) {
+            loadData()
+        }
+        .onChange(of: store.records.map(\.id)) {
+            loadData()
+        }
     }
 
     private var holding: InvestmentHolding? {
@@ -1296,6 +1327,7 @@ struct InvestmentFeedRecordsSection: View {
                     } label: {
                         JournalRecordRow(record: record)
                     }
+                    .accessibilityIdentifier("investment_feed_row_\(record.paymentDetailName)")
                 }
             }
         }
