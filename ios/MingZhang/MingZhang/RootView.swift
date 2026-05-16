@@ -1457,6 +1457,21 @@ struct StatisticsView: View {
                     }
                 }
 
+                Section("投资结果") {
+                    SummaryRow(title: "已实现收益", value: store.investmentMonthlySummary.realizedGain)
+                    SummaryRow(title: "已实现亏损", value: store.investmentMonthlySummary.realizedLoss)
+                    SummaryRow(
+                        title: "已实现净结果",
+                        value: store.investmentMonthlySummary.realizedGain - store.investmentMonthlySummary.realizedLoss
+                    )
+                    SummaryRow(title: "投资资产期末", value: store.investmentMonthlySummary.endingBookValue)
+                    NavigationLink {
+                        InvestmentResultView()
+                    } label: {
+                        Text("查看投资结果")
+                    }
+                }
+
                 Section("来源") {
                     Text("来源流水 \(store.statisticsSummary.sourceRecordIds.count) 条")
                         .foregroundStyle(.secondary)
@@ -1476,6 +1491,66 @@ struct StatisticsView: View {
             .sheet(isPresented: $isShowingMonthPicker) {
                 MonthPickerView()
             }
+        }
+    }
+}
+
+struct InvestmentResultView: View {
+    @EnvironmentObject private var store: LedgerStore
+
+    var body: some View {
+        List {
+            Section("汇总") {
+                SummaryRow(title: "已实现收益", value: store.investmentMonthlySummary.realizedGain)
+                SummaryRow(title: "已实现亏损", value: store.investmentMonthlySummary.realizedLoss)
+                SummaryRow(title: "投资资产期末", value: store.investmentMonthlySummary.endingBookValue)
+            }
+
+            Section("基金") {
+                if store.investmentHoldings.isEmpty {
+                    ContentUnavailableView("暂无投资结果", systemImage: "chart.line.uptrend.xyaxis")
+                } else {
+                    ForEach(store.investmentHoldings) { holding in
+                        NavigationLink {
+                            InvestmentFundResultView(fundName: holding.fundName)
+                        } label: {
+                            SummaryRow(title: holding.fundName, value: holding.bookValue)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("投资结果")
+    }
+}
+
+struct InvestmentFundResultView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let fundName: String
+    @State private var summary: InvestmentMonthlySummary?
+
+    var body: some View {
+        List {
+            if let summary {
+                Section("结果") {
+                    SummaryRow(title: "卖出入账", value: summary.sellBookAmount)
+                    SummaryRow(title: "已实现收益", value: summary.realizedGain)
+                    SummaryRow(title: "已实现亏损", value: summary.realizedLoss)
+                    SummaryRow(title: "期末账面价值", value: summary.endingBookValue)
+                }
+            }
+
+            Section("明细") {
+                NavigationLink {
+                    InvestmentLedgerView(fundName: fundName)
+                } label: {
+                    Text("查看投资明细账")
+                }
+            }
+        }
+        .navigationTitle(fundName)
+        .onAppear {
+            summary = store.loadInvestmentMonthlySummary(fundName: fundName)
         }
     }
 }
