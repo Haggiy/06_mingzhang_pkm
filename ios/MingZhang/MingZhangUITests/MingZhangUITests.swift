@@ -200,3 +200,34 @@ final class ImportMemoryUITests: XCTestCase {
         assertClassificationDisplayed() // 无历史，无预填
     }
 }
+
+final class InvestmentLedgerUITests: XCTestCase {
+    var app: XCUIApplication!
+
+    override func setUp() {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment["MZ_INVESTMENT_SETUP"] = """
+        2026-03|2026-03-10|沪深300指数A|buy|300|200|1.50|起始买入
+        2026-04|2026-04-10|沪深300指数A|sell|-120|-100||赎回
+        """
+    }
+
+    override func tearDown() {
+        app.terminate()
+    }
+
+    func testInvestmentLedgerShowsInvestmentAssetEntryAndFundRow() {
+        app.launch()
+
+        XCTAssertTrue(app.tabBars.buttons["资产负债"].waitForExistence(timeout: 10))
+        app.tabBars.buttons["资产负债"].tap()
+
+        XCTAssertTrue(app.buttons["investment_asset_entry"].waitForExistence(timeout: 10))
+        app.buttons["investment_asset_entry"].tap()
+
+        let fundRow = app.buttons["investment_fund_row_沪深300指数A"]
+        XCTAssertTrue(fundRow.waitForExistence(timeout: 10))
+    }
+}

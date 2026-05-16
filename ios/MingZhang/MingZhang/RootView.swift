@@ -999,6 +999,21 @@ struct BalanceView: View {
                             SummaryRow(title: "现金类资产", value: store.balanceSummary.cashBalance)
                         }
                     }
+
+                    if store.investmentHoldings.isEmpty {
+                        SummaryRow(title: "基金投资资产", value: 0)
+                            .accessibilityIdentifier("investment_asset_entry")
+                    } else {
+                        NavigationLink {
+                            InvestmentFundListView()
+                        } label: {
+                            SummaryRow(
+                                title: "基金投资资产",
+                                value: store.balanceSummary.investmentItems.reduce(Decimal(0)) { $0 + $1.amount }
+                            )
+                        }
+                        .accessibilityIdentifier("investment_asset_entry")
+                    }
                 }
 
                 Section("负债") {
@@ -1164,6 +1179,291 @@ struct SourceRecordsView: View {
     }
 }
 
+struct InvestmentFundListView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @State private var selectedFundName: String?
+
+    var body: some View {
+        List {
+            Section("基金标的") {
+                ForEach(store.investmentHoldings) { holding in
+                    Button {
+                        selectedFundName = holding.fundName
+                    } label: {
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                SummaryRow(title: holding.fundName, value: holding.bookValue)
+                                Text("份额 \(holding.holdingShare.mingZhangAmountText)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("investment_fund_row_\(holding.fundName)")
+                }
+            }
+        }
+        .navigationTitle("基金投资")
+        .navigationDestination(isPresented: Binding(
+            get: { selectedFundName != nil },
+            set: { isPresented in
+                if !isPresented {
+                    selectedFundName = nil
+                }
+            }
+        )) {
+            if let selectedFundName {
+                InvestmentLedgerView(fundName: selectedFundName)
+            }
+        }
+    }
+}
+
+struct InvestmentLedgerView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let fundName: String
+    @State private var transactions: [InvestmentTransaction] = []
+    @State private var summary: InvestmentMonthlySummary?
+    @State private var feedRecords: [JournalRecord] = []
+    @State private var isShowingCreateForm = false
+
+    var body: some View {
+        List {
+            Section("标的") {
+                Text(fundName)
+                    .accessibilityIdentifier("investment_ledger_fund_name")
+            }
+
+            if let holding {
+                Section("持仓") {
+                    SummaryRow(title: "账面价值", value: holding.bookValue)
+                    SummaryRow(title: "持有份额", value: holding.holdingShare)
+                    if let presentValue = holding.presentValue {
+                        SummaryRow(title: "当前市值", value: presentValue)
+                    }
+                    if let unrealizedGain = holding.unrealizedGain {
+                        SummaryRow(title: "未实现结果", value: unrealizedGain)
+                    }
+                }
+            }
+
+            if let summary {
+                Section("\(store.accountMonth) 结果") {
+                    SummaryRow(title: "买入入账", value: summary.buyBookAmount)
+                    SummaryRow(title: "卖出入账", value: summary.sellBookAmount)
+                    SummaryRow(title: "已实现收益", value: summary.realizedGain)
+                    SummaryRow(title: "已实现亏损", value: summary.realizedLoss)
+                }
+            }
+
+            InvestmentFeedRecordsSection(records: feedRecords)
+
+            Section("交易") {
+                if transactions.isEmpty {
+                    ContentUnavailableView("暂无交易", systemImage: "tray")
+                } else {
+                    ForEach(transactions) { transaction in
+                        NavigationLink {
+                            InvestmentTransactionFormView(mode: .edit(transaction))
+                        } label: {
+                            InvestmentTransactionRow(transaction: transaction)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle(fundName)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    isShowingCreateForm = true
+                } label: {
+                    Label("新增交易", systemImage: "plus")
+                }
+                .accessibilityIdentifier("investment_add_transaction_button")
+            }
+        }
+        .sheet(isPresented: $isShowingCreateForm, onDismiss: loadData) {
+            NavigationStack {
+                InvestmentTransactionFormView(mode: .create(fundName: fundName))
+            }
+        }
+        .onAppear(perform: loadData)
+        .onChange(of: store.investmentHoldings.map(\.id)) {
+            loadData()
+        }
+        .onChange(of: store.records.map(\.id)) {
+            loadData()
+        }
+    }
+
+    private var holding: InvestmentHolding? {
+        store.investmentHoldings.first { $0.fundName == fundName }
+    }
+
+    private func loadData() {
+        transactions = store.loadInvestmentTransactions(fundName: fundName)
+        summary = store.loadInvestmentMonthlySummary(fundName: fundName)
+        feedRecords = store.loadInvestmentFeedRecords(fundName: fundName)
+    }
+}
+
+struct InvestmentFeedRecordsSection: View {
+    let records: [JournalRecord]
+
+    var body: some View {
+        Section("回填流水") {
+            if records.isEmpty {
+                ContentUnavailableView("暂无回填", systemImage: "tray")
+            } else {
+                ForEach(records) { record in
+                    NavigationLink {
+                        JournalFormView(mode: .edit(record))
+                    } label: {
+                        JournalRecordRow(record: record)
+                    }
+                    .accessibilityIdentifier("investment_feed_row_\(record.paymentDetailName)")
+                }
+            }
+        }
+    }
+}
+
+struct InvestmentTransactionRow: View {
+    let transaction: InvestmentTransaction
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(transaction.transactionType.displayName)
+                    .font(.headline)
+                Spacer()
+                Text((transaction.tradeAmount ?? transaction.nav ?? 0).mingZhangAmountText)
+                    .font(.headline)
+            }
+            Text("\(transaction.accountMonth) / 份额 \((transaction.tradeShare ?? transaction.holdingShare).mingZhangAmountText)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let bookAmount = transaction.bookAmount {
+                Text("入账 \(bookAmount.mingZhangAmountText)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let note = transaction.note, !note.isEmpty {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct InvestmentTransactionFormView: View {
+    enum Mode: Equatable {
+        case create(fundName: String)
+        case edit(InvestmentTransaction)
+    }
+
+    @EnvironmentObject private var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
+    let mode: Mode
+    @State private var input: InvestmentFormInput
+    @State private var isShowingDeleteConfirmation = false
+
+    init(mode: Mode) {
+        self.mode = mode
+        switch mode {
+        case .create(let fundName):
+            _input = State(initialValue: InvestmentFormInput(fundName: fundName))
+        case .edit(let transaction):
+            _input = State(initialValue: .from(transaction: transaction))
+        }
+    }
+
+    var body: some View {
+        Form {
+            Section("交易") {
+                TextField("账月", text: $input.accountMonth)
+                    .textInputAutocapitalization(.never)
+                TextField("日期", text: $input.occurredDateText)
+                    .textInputAutocapitalization(.never)
+                TextField("标的名称", text: $input.fundName)
+                Picker("交易类别", selection: $input.transactionType) {
+                    ForEach(InvestmentTransactionType.allCases, id: \.self) { type in
+                        Text(type.displayName).tag(type)
+                    }
+                }
+                .pickerStyle(.segmented)
+                TextField("交易金额", text: $input.tradeAmountText)
+                    .keyboardType(.numbersAndPunctuation)
+                TextField("交易份额", text: $input.tradeShareText)
+                    .keyboardType(.numbersAndPunctuation)
+                TextField("单位净值", text: $input.navText)
+                    .keyboardType(.numbersAndPunctuation)
+                TextField("备注", text: $input.note, axis: .vertical)
+            }
+
+            if case .edit = mode {
+                Section {
+                    Button("删除交易", role: .destructive) {
+                        isShowingDeleteConfirmation = true
+                    }
+                }
+            }
+        }
+        .navigationTitle(modeTitle)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("取消") {
+                    dismiss()
+                }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("保存") {
+                    if save() {
+                        dismiss()
+                    }
+                }
+                .accessibilityIdentifier("investment_save_button")
+            }
+        }
+        .confirmationDialog("确认删除交易？", isPresented: $isShowingDeleteConfirmation, titleVisibility: .visible) {
+            Button("删除交易", role: .destructive) {
+                if case .edit(let transaction) = mode, store.deleteInvestmentTransaction(id: transaction.id) {
+                    dismiss()
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("删除后会重新计算投资回填和账月结果。")
+        }
+    }
+
+    private var modeTitle: String {
+        switch mode {
+        case .create:
+            "新增交易"
+        case .edit:
+            "编辑交易"
+        }
+    }
+
+    private func save() -> Bool {
+        switch mode {
+        case .create:
+            return store.createInvestmentTransaction(input: input)
+        case .edit(let transaction):
+            return store.updateInvestmentTransaction(id: transaction.id, input: input)
+        }
+    }
+}
+
 struct StatisticsView: View {
     @EnvironmentObject private var store: LedgerStore
     @State private var isShowingMonthPicker = false
@@ -1189,6 +1489,21 @@ struct StatisticsView: View {
                     }
                 }
 
+                Section("投资结果") {
+                    SummaryRow(title: "已实现收益", value: store.investmentMonthlySummary.realizedGain)
+                    SummaryRow(title: "已实现亏损", value: store.investmentMonthlySummary.realizedLoss)
+                    SummaryRow(
+                        title: "已实现净结果",
+                        value: store.investmentMonthlySummary.realizedGain - store.investmentMonthlySummary.realizedLoss
+                    )
+                    SummaryRow(title: "投资资产期末", value: store.investmentMonthlySummary.endingBookValue)
+                    NavigationLink {
+                        InvestmentResultView()
+                    } label: {
+                        Text("查看投资结果")
+                    }
+                }
+
                 Section("来源") {
                     Text("来源流水 \(store.statisticsSummary.sourceRecordIds.count) 条")
                         .foregroundStyle(.secondary)
@@ -1208,6 +1523,66 @@ struct StatisticsView: View {
             .sheet(isPresented: $isShowingMonthPicker) {
                 MonthPickerView()
             }
+        }
+    }
+}
+
+struct InvestmentResultView: View {
+    @EnvironmentObject private var store: LedgerStore
+
+    var body: some View {
+        List {
+            Section("汇总") {
+                SummaryRow(title: "已实现收益", value: store.investmentMonthlySummary.realizedGain)
+                SummaryRow(title: "已实现亏损", value: store.investmentMonthlySummary.realizedLoss)
+                SummaryRow(title: "投资资产期末", value: store.investmentMonthlySummary.endingBookValue)
+            }
+
+            Section("基金") {
+                if store.investmentHoldings.isEmpty {
+                    ContentUnavailableView("暂无投资结果", systemImage: "chart.line.uptrend.xyaxis")
+                } else {
+                    ForEach(store.investmentHoldings) { holding in
+                        NavigationLink {
+                            InvestmentFundResultView(fundName: holding.fundName)
+                        } label: {
+                            SummaryRow(title: holding.fundName, value: holding.bookValue)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("投资结果")
+    }
+}
+
+struct InvestmentFundResultView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let fundName: String
+    @State private var summary: InvestmentMonthlySummary?
+
+    var body: some View {
+        List {
+            if let summary {
+                Section("结果") {
+                    SummaryRow(title: "卖出入账", value: summary.sellBookAmount)
+                    SummaryRow(title: "已实现收益", value: summary.realizedGain)
+                    SummaryRow(title: "已实现亏损", value: summary.realizedLoss)
+                    SummaryRow(title: "期末账面价值", value: summary.endingBookValue)
+                }
+            }
+
+            Section("明细") {
+                NavigationLink {
+                    InvestmentLedgerView(fundName: fundName)
+                } label: {
+                    Text("查看投资明细账")
+                }
+            }
+        }
+        .navigationTitle(fundName)
+        .onAppear {
+            summary = store.loadInvestmentMonthlySummary(fundName: fundName)
         }
     }
 }
@@ -1320,6 +1695,19 @@ private extension RecordSource {
             return "投资回填"
         case .engine:
             return "引擎"
+        }
+    }
+}
+
+private extension InvestmentTransactionType {
+    var displayName: String {
+        switch self {
+        case .buy:
+            return "买入"
+        case .sell:
+            return "卖出"
+        case .nav:
+            return "净值"
         }
     }
 }

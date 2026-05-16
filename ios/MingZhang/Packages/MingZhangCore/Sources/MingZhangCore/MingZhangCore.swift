@@ -8,6 +8,7 @@ import GRDB
 public enum MingZhangError: Error, Equatable, LocalizedError {
     case missingSeed(String)
     case recordNotFound(UUID)
+    case investmentTransactionNotFound(UUID)
     case recordNotEditable(UUID)
     case invalidDate(String)
     case validation(String)
@@ -18,6 +19,8 @@ public enum MingZhangError: Error, Equatable, LocalizedError {
             "缺少默认配置：\(value)"
         case .recordNotFound(let id):
             "找不到流水记录：\(id.uuidString)"
+        case .investmentTransactionNotFound(let id):
+            "找不到投资交易：\(id.uuidString)"
         case .recordNotEditable:
             "这条记录由系统生成或回填，不能直接编辑或删除"
         case .invalidDate(let value):
@@ -119,6 +122,7 @@ public struct JournalRecord: Equatable, Identifiable, Sendable {
     public var engineKey: String?
     public var objectKey: String?
     public var sourceRecordIds: [UUID]
+    public var sourceInvestmentTransactionIds: [UUID]
     public var sourceImportBatchId: UUID?
     public var sourceImportCandidateId: UUID?
     public var createdAt: Date
@@ -245,11 +249,18 @@ public struct BalanceSummary: Equatable, Sendable {
     public var cashBalance: Decimal
     public var cashSourceRecordIds: [UUID]
     public var liabilityItems: [BalanceItem]
+    public var investmentItems: [BalanceItem]
 
-    public init(cashBalance: Decimal, cashSourceRecordIds: [UUID] = [], liabilityItems: [BalanceItem]) {
+    public init(
+        cashBalance: Decimal,
+        cashSourceRecordIds: [UUID] = [],
+        liabilityItems: [BalanceItem],
+        investmentItems: [BalanceItem] = []
+    ) {
         self.cashBalance = cashBalance
         self.cashSourceRecordIds = cashSourceRecordIds
         self.liabilityItems = liabilityItems
+        self.investmentItems = investmentItems
     }
 }
 
@@ -409,6 +420,34 @@ public final class LedgerDatabase: @unchecked Sendable {
             try db.create(index: "idx_import_candidates_transaction", on: "import_candidates", columns: ["raw_transaction_id"])
             try db.create(index: "idx_import_candidates_fingerprint", on: "import_candidates", columns: ["raw_fingerprint"])
         }
+        migrator.registerMigration("v3_p1_investment") { db in
+            try db.alter(table: "journal_records") { table in
+                table.add(column: "source_investment_transaction_ids", .text)
+                    .notNull()
+                    .defaults(to: "")
+            }
+
+            try db.create(table: "investment_transactions", ifNotExists: true) { table in
+                table.column("id", .text).primaryKey()
+                table.column("account_month", .text).notNull().indexed()
+                table.column("occurred_at", .text).notNull().indexed()
+                table.column("fund_name", .text).notNull().indexed()
+                table.column("transaction_type", .text).notNull()
+                table.column("trade_amount", .text)
+                table.column("trade_share", .text)
+                table.column("nav", .text)
+                table.column("note", .text)
+                table.column("book_amount", .text)
+                table.column("realized_gain", .text).notNull()
+                table.column("realized_loss", .text).notNull()
+                table.column("holding_share", .text).notNull()
+                table.column("average_cost", .text)
+                table.column("book_value", .text).notNull()
+                table.column("present_value", .text)
+                table.column("created_at", .text).notNull()
+                table.column("updated_at", .text).notNull()
+            }
+        }
         return migrator
     }
 }
@@ -433,6 +472,15 @@ public final class LedgerUseCases: @unchecked Sendable {
 
             let entertainmentType = try insertPaymentTypeIfNeeded(db, name: "文娱游购开支", element: .expense, now: now)
             try insertPaymentDetailIfNeeded(db, name: "饮食游乐费", paymentTypeId: entertainmentType.id, now: now)
+
+            let assetInvestmentType = try insertPaymentTypeIfNeeded(db, name: "资产类支出", element: .asset, now: now)
+            try insertPaymentDetailIfNeeded(db, name: "金融资产投资", paymentTypeId: assetInvestmentType.id, now: now)
+
+            let investmentIncomeType = try insertPaymentTypeIfNeeded(db, name: "理财收入", element: .income, now: now)
+            try insertPaymentDetailIfNeeded(db, name: "投资收益", paymentTypeId: investmentIncomeType.id, now: now)
+
+            let financeExpenseType = try insertPaymentTypeIfNeeded(db, name: "财务费用开支", element: .expense, now: now)
+            try insertPaymentDetailIfNeeded(db, name: "投资亏损", paymentTypeId: financeExpenseType.id, now: now)
         }
     }
 
@@ -463,6 +511,195 @@ public final class LedgerUseCases: @unchecked Sendable {
                 FROM payment_details
                 ORDER BY name
                 """).map(paymentDetail(from:))
+        }
+    }
+
+    public func queryInvestmentTransactions(fundName: String? = nil) throws -> [InvestmentTransaction] {
+        try database.writer.read { db in
+            try fetchInvestmentTransactions(db, fundName: fundName)
+        }
+    }
+
+    public func queryInvestmentHoldings(accountMonth: String) throws -> [InvestmentHolding] {
+        try database.writer.read { db in
+            try fetchInvestmentHoldings(db, accountMonth: accountMonth)
+        }
+    }
+
+    public func queryInvestmentMonthlySummary(accountMonth: String, fundName: String? = nil) throws -> InvestmentMonthlySummary {
+        try database.writer.read { db in
+            try validateAccountMonth(accountMonth)
+            let transactions = try fetchInvestmentTransactions(db, fundName: fundName)
+                .filter { $0.accountMonth == accountMonth }
+            let holdings = try fetchInvestmentHoldings(db, accountMonth: accountMonth)
+                .filter { holding in
+                    fundName.map { holding.fundName == $0 } ?? true
+                }
+            let feedRecords = try fetchInvestmentFeedRecords(db, accountMonth: accountMonth, fundName: fundName)
+
+            return InvestmentMonthlySummary(
+                accountMonth: accountMonth,
+                fundName: fundName,
+                buyBookAmount: transactions
+                    .filter { $0.transactionType == .buy }
+                    .reduce(Decimal(0)) { $0 + ($1.bookAmount ?? 0) },
+                sellBookAmount: transactions
+                    .filter { $0.transactionType == .sell }
+                    .reduce(Decimal(0)) { $0 + ($1.bookAmount ?? 0) },
+                realizedGain: transactions.reduce(Decimal(0)) { $0 + $1.realizedGain },
+                realizedLoss: transactions.reduce(Decimal(0)) { $0 + $1.realizedLoss },
+                endingBookValue: holdings.reduce(Decimal(0)) { $0 + $1.bookValue },
+                endingShare: holdings.reduce(Decimal(0)) { $0 + $1.holdingShare },
+                feedJournalRecordIds: feedRecords.map(\.id).sorted { $0.uuidString < $1.uuidString },
+                sourceTransactionIds: transactions.map(\.id).sorted { $0.uuidString < $1.uuidString }
+            )
+        }
+    }
+
+    public func queryInvestmentFeedRecords(accountMonth: String, fundName: String? = nil) throws -> [JournalRecord] {
+        try database.writer.read { db in
+            try fetchInvestmentFeedRecords(db, accountMonth: accountMonth, fundName: fundName)
+        }
+    }
+
+    public func getInvestmentFeedTrace(recordId: UUID) throws -> InvestmentFeedTrace? {
+        try database.writer.read { db in
+            let record = try requireJournalRecord(db, id: recordId)
+            guard
+                record.recordSource == .investmentFeed,
+                !record.sourceInvestmentTransactionIds.isEmpty
+            else {
+                return nil
+            }
+            return InvestmentFeedTrace(
+                journalRecord: record,
+                transactions: try fetchInvestmentTransactions(db, ids: record.sourceInvestmentTransactionIds)
+            )
+        }
+    }
+
+    @discardableResult
+    public func createInvestmentTransaction(input: CreateInvestmentTransactionInput) throws -> InvestmentTransaction {
+        let result = try database.writer.write { db in
+            try validateInvestmentInput(db, input: input)
+            let now = Date()
+            let transaction = InvestmentTransaction(
+                id: UUID(),
+                accountMonth: input.accountMonth,
+                occurredAt: input.occurredAt,
+                fundName: input.fundName.trimmingCharacters(in: .whitespacesAndNewlines),
+                transactionType: input.transactionType,
+                tradeAmount: input.tradeAmount,
+                tradeShare: input.tradeShare,
+                nav: input.nav,
+                note: input.note,
+                bookAmount: nil,
+                realizedGain: 0,
+                realizedLoss: 0,
+                holdingShare: 0,
+                averageCost: nil,
+                bookValue: 0,
+                presentValue: nil,
+                createdAt: now,
+                updatedAt: now
+            )
+            try insertInvestmentTransaction(db, transaction: transaction)
+            let affectedMonths = try recalculateInvestmentLedger(db, fundName: transaction.fundName)
+            try reflowInvestmentFeedRecords(db, fundName: transaction.fundName, accountMonths: affectedMonths)
+            return (transaction: try requireInvestmentTransaction(db, id: transaction.id), affectedMonths: affectedMonths)
+        }
+
+        for month in result.affectedMonths.sorted() {
+            _ = try recalculateAccountMonth(month)
+        }
+        return result.transaction
+    }
+
+    @discardableResult
+    public func updateInvestmentTransaction(id: UUID, changes: InvestmentTransactionChanges) throws -> InvestmentTransaction {
+        let result = try database.writer.write { db in
+            let original = try requireInvestmentTransaction(db, id: id)
+            let oldFundMonths = Set(try fetchInvestmentTransactions(db, fundName: original.fundName).map(\.accountMonth))
+            var transaction = original
+
+            if let accountMonth = changes.accountMonth {
+                transaction.accountMonth = accountMonth
+            }
+            if let occurredAt = changes.occurredAt {
+                transaction.occurredAt = occurredAt
+            }
+            if let fundName = changes.fundName {
+                transaction.fundName = fundName.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let transactionType = changes.transactionType {
+                transaction.transactionType = transactionType
+            }
+            if let tradeAmount = changes.tradeAmount {
+                transaction.tradeAmount = tradeAmount
+            }
+            if let tradeShare = changes.tradeShare {
+                transaction.tradeShare = tradeShare
+            }
+            if let nav = changes.nav {
+                transaction.nav = nav
+            }
+            if let note = changes.note {
+                transaction.note = note
+            }
+
+            try validateInvestmentInput(db, input: CreateInvestmentTransactionInput(
+                accountMonth: transaction.accountMonth,
+                occurredAt: transaction.occurredAt,
+                fundName: transaction.fundName,
+                transactionType: transaction.transactionType,
+                tradeAmount: transaction.tradeAmount,
+                tradeShare: transaction.tradeShare,
+                nav: transaction.nav,
+                note: transaction.note
+            ))
+            transaction.updatedAt = Date()
+            try persistInvestmentTransactionUpdate(db, transaction: transaction)
+
+            var affectedMonths = oldFundMonths
+            if original.fundName != transaction.fundName {
+                let oldRemainingMonths = try recalculateInvestmentLedger(db, fundName: original.fundName)
+                try reflowInvestmentFeedRecords(
+                    db,
+                    fundName: original.fundName,
+                    accountMonths: oldFundMonths.union(oldRemainingMonths)
+                )
+                affectedMonths.formUnion(oldRemainingMonths)
+            }
+
+            let newFundMonths = try recalculateInvestmentLedger(db, fundName: transaction.fundName)
+            let newReflowMonths = original.fundName == transaction.fundName
+                ? oldFundMonths.union(newFundMonths)
+                : newFundMonths
+            try reflowInvestmentFeedRecords(db, fundName: transaction.fundName, accountMonths: newReflowMonths)
+            affectedMonths.formUnion(newReflowMonths)
+
+            return (transaction: try requireInvestmentTransaction(db, id: id), affectedMonths: affectedMonths)
+        }
+
+        for month in result.affectedMonths.sorted() {
+            _ = try recalculateAccountMonth(month)
+        }
+        return result.transaction
+    }
+
+    public func deleteInvestmentTransaction(id: UUID) throws {
+        let affectedMonths = try database.writer.write { db in
+            let transaction = try requireInvestmentTransaction(db, id: id)
+            let oldFundMonths = Set(try fetchInvestmentTransactions(db, fundName: transaction.fundName).map(\.accountMonth))
+            try db.execute(sql: "DELETE FROM investment_transactions WHERE id = ?", arguments: [id.uuidString])
+            let remainingMonths = try recalculateInvestmentLedger(db, fundName: transaction.fundName)
+            let reflowMonths = oldFundMonths.union(remainingMonths)
+            try reflowInvestmentFeedRecords(db, fundName: transaction.fundName, accountMonths: reflowMonths)
+            return reflowMonths
+        }
+
+        for month in affectedMonths.sorted() {
+            _ = try recalculateAccountMonth(month)
         }
     }
 
@@ -675,6 +912,7 @@ public final class LedgerUseCases: @unchecked Sendable {
                     engineKey: nil,
                     objectKey: nil,
                     sourceRecordIds: [],
+                    sourceInvestmentTransactionIds: [],
                     sourceImportBatchId: candidate.batchId,
                     sourceImportCandidateId: candidate.id,
                     createdAt: now,
@@ -760,6 +998,7 @@ public final class LedgerUseCases: @unchecked Sendable {
                 engineKey: nil,
                 objectKey: nil,
                 sourceRecordIds: [],
+                sourceInvestmentTransactionIds: [],
                 sourceImportBatchId: nil,
                 sourceImportCandidateId: nil,
                 createdAt: now,
@@ -964,10 +1203,22 @@ public final class LedgerUseCases: @unchecked Sendable {
             }
             .sorted { $0.name < $1.name }
 
+        let investments = engineRecords
+            .filter { $0.engineFamily == .investment }
+            .map { record in
+                BalanceItem(
+                    name: record.objectKey?.replacingOccurrences(of: "investment:", with: "") ?? "总投资资产",
+                    amount: record.amount,
+                    sourceRecordIds: record.sourceRecordIds
+                )
+            }
+            .sorted { $0.name < $1.name }
+
         return BalanceSummary(
             cashBalance: cashBalance,
             cashSourceRecordIds: cashSourceRecordIds,
-            liabilityItems: liabilities
+            liabilityItems: liabilities,
+            investmentItems: investments
         )
     }
 
@@ -1024,8 +1275,8 @@ public final class LedgerUseCases: @unchecked Sendable {
             var updatedIds: [UUID] = []
             var deletedIds: [UUID] = []
 
-            let expectedDrafts = makeP0EngineDrafts(accountMonth: accountMonth, rows: rows)
-            let existingRecords = try fetchP0EngineRecords(db, accountMonth: accountMonth)
+            let expectedDrafts = try makeEngineDrafts(db, accountMonth: accountMonth, rows: rows)
+            let existingRecords = try fetchEngineRecords(db, accountMonth: accountMonth)
             let existingRecordsByKey = Dictionary(
                 uniqueKeysWithValues: existingRecords.compactMap { record in
                     record.engineKey.map { ($0, record) }
@@ -1115,6 +1366,13 @@ private struct EngineRecordDraft {
     var engineKey: String
     var objectKey: String
     var sourceRecordIds: [UUID]
+    var sourceInvestmentTransactionIds: [UUID]
+}
+
+private enum InvestmentFeedKind {
+    case bookAmount
+    case realizedGain
+    case realizedLoss
 }
 
 private struct ImportMemoryKey: Hashable {
@@ -1168,6 +1426,7 @@ private let selectJournalRecordSQL = """
         journal_records.engine_key,
         journal_records.object_key,
         journal_records.source_record_ids,
+        journal_records.source_investment_transaction_ids,
         journal_records.source_import_batch_id,
         journal_records.source_import_candidate_id,
         journal_records.created_at,
@@ -1356,15 +1615,64 @@ private func importCandidateArguments(
     ]
 }
 
+private func insertInvestmentTransaction(_ db: Database, transaction: InvestmentTransaction) throws {
+    try db.execute(sql: """
+        INSERT INTO investment_transactions (
+            id, account_month, occurred_at, fund_name, transaction_type,
+            trade_amount, trade_share, nav, note, book_amount, realized_gain,
+            realized_loss, holding_share, average_cost, book_value, present_value,
+            created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, arguments: investmentTransactionArguments(transaction))
+}
+
+private func persistInvestmentTransactionUpdate(_ db: Database, transaction: InvestmentTransaction) throws {
+    var arguments = investmentTransactionArguments(transaction)
+    arguments += [transaction.id.uuidString]
+    try db.execute(sql: """
+        UPDATE investment_transactions SET
+            id = ?, account_month = ?, occurred_at = ?, fund_name = ?, transaction_type = ?,
+            trade_amount = ?, trade_share = ?, nav = ?, note = ?, book_amount = ?,
+            realized_gain = ?, realized_loss = ?, holding_share = ?, average_cost = ?,
+            book_value = ?, present_value = ?, created_at = ?, updated_at = ?
+        WHERE id = ?
+        """, arguments: arguments)
+}
+
+private func investmentTransactionArguments(_ transaction: InvestmentTransaction) -> StatementArguments {
+    [
+        transaction.id.uuidString,
+        transaction.accountMonth,
+        encodeDate(transaction.occurredAt),
+        transaction.fundName,
+        transaction.transactionType.rawValue,
+        transaction.tradeAmount.map(encodeDecimal),
+        transaction.tradeShare.map(encodeDecimal),
+        transaction.nav.map(encodeDecimal),
+        transaction.note,
+        transaction.bookAmount.map(encodeDecimal),
+        encodeDecimal(transaction.realizedGain),
+        encodeDecimal(transaction.realizedLoss),
+        encodeDecimal(transaction.holdingShare),
+        transaction.averageCost.map(encodeDecimal),
+        encodeDecimal(transaction.bookValue),
+        transaction.presentValue.map(encodeDecimal),
+        encodeDate(transaction.createdAt),
+        encodeDate(transaction.updatedAt)
+    ]
+}
+
 private func insertJournalRecord(_ db: Database, record: JournalRecord) throws {
     try db.execute(sql: """
         INSERT INTO journal_records (
             id, account_month, occurred_at, payment_method_id, amount, payment_type_id,
             payment_detail_id, note, record_source, record_kind, carry_forward_role,
             engine_family, engine_key, object_key, source_record_ids,
-            source_import_batch_id, source_import_candidate_id, created_at, updated_at
+            source_investment_transaction_ids, source_import_batch_id,
+            source_import_candidate_id, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, arguments: journalRecordArguments(record))
 }
 
@@ -1376,8 +1684,9 @@ private func persistJournalRecordUpdate(_ db: Database, record: JournalRecord) t
             id = ?, account_month = ?, occurred_at = ?, payment_method_id = ?, amount = ?,
             payment_type_id = ?, payment_detail_id = ?, note = ?, record_source = ?,
             record_kind = ?, carry_forward_role = ?, engine_family = ?, engine_key = ?,
-            object_key = ?, source_record_ids = ?, source_import_batch_id = ?,
-            source_import_candidate_id = ?, created_at = ?, updated_at = ?
+            object_key = ?, source_record_ids = ?, source_investment_transaction_ids = ?,
+            source_import_batch_id = ?, source_import_candidate_id = ?, created_at = ?,
+            updated_at = ?
         WHERE id = ?
         """, arguments: arguments)
 }
@@ -1399,6 +1708,7 @@ private func journalRecordArguments(_ record: JournalRecord) -> StatementArgumen
         record.engineKey,
         record.objectKey,
         encodeUUIDList(record.sourceRecordIds),
+        encodeUUIDList(record.sourceInvestmentTransactionIds),
         record.sourceImportBatchId?.uuidString,
         record.sourceImportCandidateId?.uuidString,
         encodeDate(record.createdAt),
@@ -1425,23 +1735,292 @@ private func fetchSourceRecordsWithSemantics(_ db: Database, accountMonth: Strin
     }
 }
 
-private func fetchP0EngineRecords(_ db: Database, accountMonth: String) throws -> [JournalRecord] {
+private func fetchInvestmentTransactions(_ db: Database, fundName: String? = nil) throws -> [InvestmentTransaction] {
+    var sql = """
+        SELECT id, account_month, occurred_at, fund_name, transaction_type,
+               trade_amount, trade_share, nav, note, book_amount, realized_gain,
+               realized_loss, holding_share, average_cost, book_value, present_value,
+               created_at, updated_at
+        FROM investment_transactions
+        """
+    var arguments = StatementArguments()
+    if let fundName {
+        sql += " WHERE fund_name = ?"
+        arguments += [fundName]
+    }
+    sql += " ORDER BY occurred_at ASC, created_at ASC, id ASC"
+    return try Row.fetchAll(db, sql: sql, arguments: arguments).map(investmentTransaction(from:))
+}
+
+private func fetchInvestmentTransactions(_ db: Database, ids: [UUID]) throws -> [InvestmentTransaction] {
+    guard !ids.isEmpty else { return [] }
+    let rows = try Row.fetchAll(db, sql: """
+        SELECT id, account_month, occurred_at, fund_name, transaction_type,
+               trade_amount, trade_share, nav, note, book_amount, realized_gain,
+               realized_loss, holding_share, average_cost, book_value, present_value,
+               created_at, updated_at
+        FROM investment_transactions
+        WHERE id IN \(sqlPlaceholders(ids.count))
+        """, arguments: StatementArguments(ids.map(\.uuidString)))
+        .map(investmentTransaction(from:))
+    let transactionsById = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+    return ids.compactMap { transactionsById[$0] }
+}
+
+private func fetchInvestmentFeedRecords(
+    _ db: Database,
+    accountMonth: String,
+    fundName: String? = nil
+) throws -> [JournalRecord] {
+    try validateAccountMonth(accountMonth)
+    var sql = """
+        \(selectJournalRecordSQL)
+        WHERE journal_records.account_month = ?
+          AND journal_records.record_source = ?
+        """
+    var arguments: StatementArguments = [
+        accountMonth,
+        RecordSource.investmentFeed.rawValue
+    ]
+    if let fundName {
+        sql += " AND journal_records.object_key = ?"
+        arguments += ["investment:\(fundName)"]
+    }
+    sql += " ORDER BY journal_records.occurred_at ASC, journal_records.created_at ASC"
+    return try Row.fetchAll(db, sql: sql, arguments: arguments).map(journalRecord(from:))
+}
+
+private func recalculateInvestmentLedger(_ db: Database, fundName: String) throws -> Set<String> {
+    let transactions = try fetchInvestmentTransactions(db, fundName: fundName)
+    let affectedMonths = Set(transactions.map(\.accountMonth))
+    var holdingShare = Decimal(0)
+    var bookValue = Decimal(0)
+    var latestNav: Decimal?
+
+    for var transaction in transactions {
+        transaction.realizedGain = 0
+        transaction.realizedLoss = 0
+        transaction.bookAmount = nil
+
+        switch transaction.transactionType {
+        case .buy:
+            let amount = transaction.tradeAmount ?? 0
+            let share = transaction.tradeShare ?? 0
+            transaction.bookAmount = roundCurrency(amount)
+            holdingShare += share
+            bookValue += amount
+        case .sell:
+            let amount = transaction.tradeAmount ?? 0
+            let share = transaction.tradeShare ?? 0
+            guard holdingShare + share >= 0 else {
+                throw MingZhangError.validation("卖出份额不能超过当前持仓")
+            }
+            let averageCost = holdingShare == 0 ? Decimal(0) : bookValue / holdingShare
+            let bookAmount = roundCurrency(share * averageCost)
+            let realized = absoluteDecimal(amount) - absoluteDecimal(bookAmount)
+            transaction.bookAmount = bookAmount
+            if realized >= 0 {
+                transaction.realizedGain = roundCurrency(realized)
+            } else {
+                transaction.realizedLoss = roundCurrency(absoluteDecimal(realized))
+            }
+            holdingShare += share
+            bookValue += bookAmount
+        case .nav:
+            if let nav = transaction.nav {
+                latestNav = nav
+            }
+        }
+
+        if let nav = transaction.nav {
+            latestNav = nav
+        }
+        transaction.holdingShare = roundShare(holdingShare)
+        transaction.bookValue = roundCurrency(bookValue)
+        transaction.averageCost = holdingShare == 0 ? nil : roundUnitCost(bookValue / holdingShare)
+        transaction.presentValue = latestNav.map { roundCurrency(holdingShare * $0) }
+        transaction.updatedAt = Date()
+        try persistInvestmentTransactionUpdate(db, transaction: transaction)
+    }
+
+    return affectedMonths
+}
+
+private func fetchInvestmentHoldings(_ db: Database, accountMonth: String) throws -> [InvestmentHolding] {
+    try validateAccountMonth(accountMonth)
+    let transactions = try fetchInvestmentTransactions(db)
+        .filter { $0.accountMonth <= accountMonth }
+    let grouped = Dictionary(grouping: transactions) { $0.fundName }
+
+    return grouped.keys.sorted().compactMap { fundName in
+        guard let fundTransactions = grouped[fundName], let latest = fundTransactions.last else { return nil }
+        guard latest.holdingShare != 0 || latest.bookValue != 0 else { return nil }
+        let sourceIds = fundTransactions
+            .filter { $0.transactionType == .buy || $0.transactionType == .sell }
+            .map(\.id)
+            .sorted { $0.uuidString < $1.uuidString }
+        let latestNav = fundTransactions.reversed().first { $0.nav != nil }?.nav
+        let presentValue = latestNav.map { roundCurrency(latest.holdingShare * $0) }
+        return InvestmentHolding(
+            fundName: fundName,
+            accountMonth: accountMonth,
+            holdingShare: latest.holdingShare,
+            averageCost: latest.averageCost,
+            bookValue: latest.bookValue,
+            latestNav: latestNav,
+            presentValue: presentValue,
+            unrealizedGain: presentValue.map { roundCurrency($0 - latest.bookValue) },
+            sourceTransactionIds: sourceIds
+        )
+    }
+}
+
+private func reflowInvestmentFeedRecords(
+    _ db: Database,
+    fundName: String,
+    accountMonths: Set<String>
+) throws {
+    guard !accountMonths.isEmpty else { return }
+    let method = try requirePaymentMethod(db, name: "电子钱包余额")
+    let assetType = try requirePaymentType(db, name: "资产类支出")
+    let assetDetail = try requirePaymentDetail(db, name: "金融资产投资", paymentTypeId: assetType.id)
+    let incomeType = try requirePaymentType(db, name: "理财收入")
+    let incomeDetail = try requirePaymentDetail(db, name: "投资收益", paymentTypeId: incomeType.id)
+    let lossType = try requirePaymentType(db, name: "财务费用开支")
+    let lossDetail = try requirePaymentDetail(db, name: "投资亏损", paymentTypeId: lossType.id)
+    let allTransactions = try fetchInvestmentTransactions(db, fundName: fundName)
+    let objectKey = "investment:\(fundName)"
+
+    for accountMonth in accountMonths {
+        try db.execute(sql: """
+            DELETE FROM journal_records
+            WHERE record_source = ?
+              AND account_month = ?
+              AND object_key = ?
+            """, arguments: [
+                RecordSource.investmentFeed.rawValue,
+                accountMonth,
+                objectKey
+            ])
+
+        let monthTransactions = allTransactions.filter { $0.accountMonth == accountMonth }
+        let bookTransactions = monthTransactions.filter { $0.bookAmount != nil }
+        let gainTransactions = monthTransactions.filter { $0.realizedGain != 0 }
+        let lossTransactions = monthTransactions.filter { $0.realizedLoss != 0 }
+
+        let bookAmount = bookTransactions.reduce(Decimal(0)) { $0 + ($1.bookAmount ?? 0) }
+        let realizedGain = gainTransactions.reduce(Decimal(0)) { $0 + $1.realizedGain }
+        let realizedLoss = lossTransactions.reduce(Decimal(0)) { $0 + $1.realizedLoss }
+
+        if bookAmount != 0 {
+            try insertInvestmentFeedRecord(
+                db,
+                accountMonth: accountMonth,
+                fundName: fundName,
+                amount: roundCurrency(bookAmount),
+                method: method,
+                type: assetType,
+                detail: assetDetail,
+                kind: .bookAmount,
+                sourceTransactionIds: bookTransactions.map(\.id)
+            )
+        }
+        if realizedGain != 0 {
+            try insertInvestmentFeedRecord(
+                db,
+                accountMonth: accountMonth,
+                fundName: fundName,
+                amount: roundCurrency(realizedGain),
+                method: method,
+                type: incomeType,
+                detail: incomeDetail,
+                kind: .realizedGain,
+                sourceTransactionIds: gainTransactions.map(\.id)
+            )
+        }
+        if realizedLoss != 0 {
+            try insertInvestmentFeedRecord(
+                db,
+                accountMonth: accountMonth,
+                fundName: fundName,
+                amount: roundCurrency(realizedLoss),
+                method: method,
+                type: lossType,
+                detail: lossDetail,
+                kind: .realizedLoss,
+                sourceTransactionIds: lossTransactions.map(\.id)
+            )
+        }
+    }
+}
+
+private func insertInvestmentFeedRecord(
+    _ db: Database,
+    accountMonth: String,
+    fundName: String,
+    amount: Decimal,
+    method: PaymentMethod,
+    type: PaymentType,
+    detail: PaymentDetail,
+    kind: InvestmentFeedKind,
+    sourceTransactionIds: [UUID]
+) throws {
+    let now = Date()
+    let kindNote: String
+    switch kind {
+    case .bookAmount:
+        kindNote = "投资成本回填"
+    case .realizedGain:
+        kindNote = "投资收益回填"
+    case .realizedLoss:
+        kindNote = "投资亏损回填"
+    }
+    let record = JournalRecord(
+        id: UUID(),
+        accountMonth: accountMonth,
+        occurredAt: monthEndPlaceholder(accountMonth),
+        paymentMethodId: method.id,
+        paymentMethodName: method.name,
+        amount: amount,
+        paymentTypeId: type.id,
+        paymentTypeName: type.name,
+        paymentDetailId: detail.id,
+        paymentDetailName: detail.name,
+        note: "\(fundName) \(kindNote)",
+        recordSource: .investmentFeed,
+        recordKind: .carryForward,
+        carryForwardRole: .accountingSkeleton,
+        engineFamily: nil,
+        engineKey: nil,
+        objectKey: "investment:\(fundName)",
+        sourceRecordIds: [],
+        sourceInvestmentTransactionIds: sourceTransactionIds.sorted { $0.uuidString < $1.uuidString },
+        sourceImportBatchId: nil,
+        sourceImportCandidateId: nil,
+        createdAt: now,
+        updatedAt: now
+    )
+    try insertJournalRecord(db, record: record)
+}
+
+private func fetchEngineRecords(_ db: Database, accountMonth: String) throws -> [JournalRecord] {
     try Row.fetchAll(db, sql: """
         \(selectJournalRecordSQL)
         WHERE journal_records.account_month = ?
           AND journal_records.record_source = ?
-          AND journal_records.engine_family IN (?, ?)
+          AND journal_records.engine_family IN (?, ?, ?)
         ORDER BY journal_records.engine_key ASC
         """, arguments: [
             accountMonth,
             RecordSource.engine.rawValue,
             EngineFamily.cash.rawValue,
-            EngineFamily.liability.rawValue
+            EngineFamily.liability.rawValue,
+            EngineFamily.investment.rawValue
         ])
         .map(journalRecord(from:))
 }
 
-private func makeP0EngineDrafts(accountMonth: String, rows: [SemanticRecordRow]) -> [EngineRecordDraft] {
+private func makeEngineDrafts(_ db: Database, accountMonth: String, rows: [SemanticRecordRow]) throws -> [EngineRecordDraft] {
     var drafts: [EngineRecordDraft] = []
     let occurredAt = monthEndPlaceholder(accountMonth)
     let liabilityRows = rows.filter {
@@ -1463,12 +2042,14 @@ private func makeP0EngineDrafts(accountMonth: String, rows: [SemanticRecordRow])
             engineFamily: .liability,
             engineKey: "\(accountMonth):liability:ending_balance:\(objectKey)",
             objectKey: objectKey,
-            sourceRecordIds: groupedRows.map(\.record.id).sorted { $0.uuidString < $1.uuidString }
+            sourceRecordIds: groupedRows.map(\.record.id).sorted { $0.uuidString < $1.uuidString },
+            sourceInvestmentTransactionIds: []
         ))
     }
 
     let cashRows = rows.filter {
-        $0.paymentMethod.methodType == .asset && $0.paymentType.element == .expense
+        $0.paymentMethod.methodType == .asset &&
+            ($0.paymentType.element == .expense || $0.paymentType.element == .asset)
     }
     let cashAmount = cashRows.reduce(Decimal(0)) { $0 - $1.record.amount }
     if cashAmount != Decimal(0) {
@@ -1481,7 +2062,29 @@ private func makeP0EngineDrafts(accountMonth: String, rows: [SemanticRecordRow])
             engineFamily: .cash,
             engineKey: "\(accountMonth):cash:ending_balance:\(objectKey)",
             objectKey: objectKey,
-            sourceRecordIds: cashRows.map(\.record.id).sorted { $0.uuidString < $1.uuidString }
+            sourceRecordIds: cashRows.map(\.record.id).sorted { $0.uuidString < $1.uuidString },
+            sourceInvestmentTransactionIds: cashRows
+                .flatMap(\.record.sourceInvestmentTransactionIds)
+                .sorted { $0.uuidString < $1.uuidString }
+        ))
+    }
+
+    let holdingRows = try fetchInvestmentHoldings(db, accountMonth: accountMonth)
+    let investmentAmount = holdingRows.reduce(Decimal(0)) { $0 + $1.bookValue }
+    if investmentAmount != 0 {
+        let objectKey = "investment:总投资资产"
+        drafts.append(EngineRecordDraft(
+            accountMonth: accountMonth,
+            occurredAt: occurredAt,
+            amount: roundCurrency(investmentAmount),
+            note: "总投资资产期末余额",
+            engineFamily: .investment,
+            engineKey: "\(accountMonth):investment:ending_balance:\(objectKey)",
+            objectKey: objectKey,
+            sourceRecordIds: [],
+            sourceInvestmentTransactionIds: holdingRows
+                .flatMap(\.sourceTransactionIds)
+                .sorted { $0.uuidString < $1.uuidString }
         ))
     }
 
@@ -1516,6 +2119,7 @@ private func makeEngineRecord(
         engineKey: draft.engineKey,
         objectKey: draft.objectKey,
         sourceRecordIds: draft.sourceRecordIds,
+        sourceInvestmentTransactionIds: draft.sourceInvestmentTransactionIds,
         sourceImportBatchId: nil,
         sourceImportCandidateId: nil,
         createdAt: createdAt,
@@ -1546,7 +2150,8 @@ private func engineRecordNeedsUpdate(
         record.engineFamily != draft.engineFamily ||
         record.engineKey != draft.engineKey ||
         record.objectKey != draft.objectKey ||
-        record.sourceRecordIds != draft.sourceRecordIds
+        record.sourceRecordIds != draft.sourceRecordIds ||
+        record.sourceInvestmentTransactionIds != draft.sourceInvestmentTransactionIds
 }
 
 private func requirePaymentMethod(_ db: Database, name: String) throws -> PaymentMethod {
@@ -1628,6 +2233,24 @@ private func requireJournalRecord(_ db: Database, id: UUID) throws -> JournalRec
         throw MingZhangError.recordNotFound(id)
     }
     return try journalRecord(from: row)
+}
+
+private func requireInvestmentTransaction(_ db: Database, id: UUID) throws -> InvestmentTransaction {
+    guard let row = try Row.fetchOne(
+        db,
+        sql: """
+            SELECT id, account_month, occurred_at, fund_name, transaction_type,
+                   trade_amount, trade_share, nav, note, book_amount, realized_gain,
+                   realized_loss, holding_share, average_cost, book_value, present_value,
+                   created_at, updated_at
+            FROM investment_transactions
+            WHERE id = ?
+            """,
+        arguments: [id.uuidString]
+    ) else {
+        throw MingZhangError.investmentTransactionNotFound(id)
+    }
+    return try investmentTransaction(from: row)
 }
 
 private func requireImportBatch(_ db: Database, id: UUID) throws -> ImportBatch {
@@ -1812,6 +2435,39 @@ private func validateRecordFields(
     }
 }
 
+private func validateInvestmentInput(_ db: Database, input: CreateInvestmentTransactionInput) throws {
+    try validateAccountMonth(input.accountMonth)
+    let fundName = input.fundName.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !fundName.isEmpty else {
+        throw MingZhangError.validation("基金标的名称不能为空")
+    }
+
+    switch input.transactionType {
+    case .buy:
+        guard let amount = input.tradeAmount, amount > 0 else {
+            throw MingZhangError.validation("买入交易金额必须大于 0")
+        }
+        guard let share = input.tradeShare, share > 0 else {
+            throw MingZhangError.validation("买入交易份额必须大于 0")
+        }
+    case .sell:
+        guard let amount = input.tradeAmount, amount < 0 else {
+            throw MingZhangError.validation("卖出交易金额必须小于 0")
+        }
+        guard let share = input.tradeShare, share < 0 else {
+            throw MingZhangError.validation("卖出交易份额必须小于 0")
+        }
+    case .nav:
+        guard let nav = input.nav, nav > 0 else {
+            throw MingZhangError.validation("净值记录必须填写大于 0 的单位净值")
+        }
+    }
+
+    if let nav = input.nav, nav <= 0 {
+        throw MingZhangError.validation("单位净值必须大于 0")
+    }
+}
+
 private func validateAccountMonth(_ accountMonth: String) throws {
     let parts = accountMonth.split(separator: "-", omittingEmptySubsequences: false)
     guard
@@ -1892,6 +2548,30 @@ private func importCandidate(from row: Row) throws -> ImportCandidateRecord {
     )
 }
 
+private func investmentTransaction(from row: Row) throws -> InvestmentTransaction {
+    let typeValue: String = row["transaction_type"]
+    return InvestmentTransaction(
+        id: try requireUUID(row["id"]),
+        accountMonth: row["account_month"],
+        occurredAt: try decodeDate(row["occurred_at"]),
+        fundName: row["fund_name"],
+        transactionType: InvestmentTransactionType(rawValue: typeValue) ?? .buy,
+        tradeAmount: decodeOptionalDecimal(row["trade_amount"]),
+        tradeShare: decodeOptionalDecimal(row["trade_share"]),
+        nav: decodeOptionalDecimal(row["nav"]),
+        note: row["note"],
+        bookAmount: decodeOptionalDecimal(row["book_amount"]),
+        realizedGain: decodeDecimal(row["realized_gain"]),
+        realizedLoss: decodeDecimal(row["realized_loss"]),
+        holdingShare: decodeDecimal(row["holding_share"]),
+        averageCost: decodeOptionalDecimal(row["average_cost"]),
+        bookValue: decodeDecimal(row["book_value"]),
+        presentValue: decodeOptionalDecimal(row["present_value"]),
+        createdAt: try decodeDate(row["created_at"]),
+        updatedAt: try decodeDate(row["updated_at"])
+    )
+}
+
 private func journalRecord(from row: Row) throws -> JournalRecord {
     let recordSource = RecordSource(rawValue: row["record_source"]) ?? .manual
     let engineFamilyValue: String? = row["engine_family"]
@@ -1915,6 +2595,7 @@ private func journalRecord(from row: Row) throws -> JournalRecord {
         engineKey: row["engine_key"],
         objectKey: row["object_key"],
         sourceRecordIds: decodeUUIDList(row["source_record_ids"]),
+        sourceInvestmentTransactionIds: decodeUUIDList(row["source_investment_transaction_ids"]),
         sourceImportBatchId: optionalUUID(row["source_import_batch_id"]),
         sourceImportCandidateId: optionalUUID(row["source_import_candidate_id"]),
         createdAt: try decodeDate(row["created_at"]),
@@ -1950,6 +2631,30 @@ private func encodeDecimal(_ value: Decimal) -> String {
 
 private func decodeDecimal(_ value: String) -> Decimal {
     Decimal(string: value, locale: Locale(identifier: "en_US_POSIX")) ?? Decimal(0)
+}
+
+private func decodeOptionalDecimal(_ value: String?) -> Decimal? {
+    guard let value, !value.isEmpty else { return nil }
+    return Decimal(string: value, locale: Locale(identifier: "en_US_POSIX"))
+}
+
+private func roundCurrency(_ value: Decimal) -> Decimal {
+    roundDecimal(value, scale: 2)
+}
+
+private func roundShare(_ value: Decimal) -> Decimal {
+    roundDecimal(value, scale: 6)
+}
+
+private func roundUnitCost(_ value: Decimal) -> Decimal {
+    roundDecimal(value, scale: 6)
+}
+
+private func roundDecimal(_ value: Decimal, scale: Int) -> Decimal {
+    var input = value
+    var output = Decimal()
+    NSDecimalRound(&output, &input, scale, .plain)
+    return output
 }
 
 private func encodeUUIDList(_ values: [UUID]) -> String {
