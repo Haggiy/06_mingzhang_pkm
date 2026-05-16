@@ -19,6 +19,20 @@ final class LedgerStore: ObservableObject {
     @Published private(set) var homeSummary = HomeSummary(incomeTotal: 0, expenseTotal: 0, balance: 0, recentRecordIds: [])
     @Published private(set) var balanceSummary = BalanceSummary(cashBalance: 0, liabilityItems: [])
     @Published private(set) var statisticsSummary = StatisticsSummary(expenseByType: [], sourceRecordIds: [])
+    @Published private(set) var investmentHoldings: [InvestmentHolding] = []
+    @Published private(set) var investmentTransactions: [InvestmentTransaction] = []
+    @Published private(set) var investmentMonthlySummary = InvestmentMonthlySummary(
+        accountMonth: "2026-04",
+        fundName: nil,
+        buyBookAmount: 0,
+        sellBookAmount: 0,
+        realizedGain: 0,
+        realizedLoss: 0,
+        endingBookValue: 0,
+        endingShare: 0,
+        feedJournalRecordIds: [],
+        sourceTransactionIds: []
+    )
     @Published private(set) var activeImportSource: ImportSource?
     @Published private(set) var activeImportBatch: ImportBatch?
     @Published private(set) var importCandidates: [ImportCandidateRecord] = []
@@ -79,6 +93,25 @@ final class LedgerStore: ObservableObject {
             let source: ImportSource = sourceStr == "wechat" ? .wechat : .alipay
             _ = createImportBatch(source: source, fileName: "test.csv", contents: testCSV)
         }
+
+        if let setup = env["MZ_INVESTMENT_SETUP"] {
+            for line in setup.split(separator: "\n") {
+                let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+                guard parts.count >= 8 else { continue }
+                let input = try InvestmentFormInput(
+                    accountMonth: parts[0],
+                    occurredDateText: parts[1],
+                    fundName: parts[2],
+                    transactionType: InvestmentTransactionType(rawValue: parts[3]) ?? .buy,
+                    tradeAmountText: parts[4],
+                    tradeShareText: parts[5],
+                    navText: parts[6],
+                    note: parts[7]
+                ).toCreateInput()
+                _ = try useCases.createInvestmentTransaction(input: input)
+            }
+            try refresh()
+        }
     }
 
     func refresh() throws {
@@ -96,6 +129,8 @@ final class LedgerStore: ObservableObject {
         homeSummary = try useCases.queryHomeSummary(accountMonth: accountMonth)
         balanceSummary = try useCases.queryBalanceSummary(accountMonth: accountMonth)
         statisticsSummary = try useCases.queryStatisticsSummary(accountMonth: accountMonth)
+        investmentHoldings = try useCases.queryInvestmentHoldings(accountMonth: accountMonth)
+        investmentMonthlySummary = try useCases.queryInvestmentMonthlySummary(accountMonth: accountMonth, fundName: nil)
         lastError = nil
     }
 
@@ -242,6 +277,96 @@ final class LedgerStore: ObservableObject {
         } catch {
             lastError = error.localizedDescription
             return nil
+        }
+    }
+
+    func loadInvestmentTransactions(fundName: String?) -> [InvestmentTransaction] {
+        do {
+            guard let useCases else { return [] }
+            let transactions = try useCases.queryInvestmentTransactions(fundName: fundName)
+            investmentTransactions = transactions
+            lastError = nil
+            return transactions
+        } catch {
+            lastError = error.localizedDescription
+            return []
+        }
+    }
+
+    func loadInvestmentMonthlySummary(fundName: String?) -> InvestmentMonthlySummary? {
+        do {
+            guard let useCases else { return nil }
+            let summary = try useCases.queryInvestmentMonthlySummary(accountMonth: accountMonth, fundName: fundName)
+            if fundName == nil {
+                investmentMonthlySummary = summary
+            }
+            lastError = nil
+            return summary
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
+    }
+
+    func loadInvestmentFeedRecords(fundName: String?) -> [JournalRecord] {
+        do {
+            guard let useCases else { return [] }
+            let records = try useCases.queryInvestmentFeedRecords(accountMonth: accountMonth, fundName: fundName)
+            lastError = nil
+            return records
+        } catch {
+            lastError = error.localizedDescription
+            return []
+        }
+    }
+
+    func loadInvestmentTrace(recordId: UUID) -> InvestmentFeedTrace? {
+        do {
+            guard let useCases else { return nil }
+            let trace = try useCases.getInvestmentFeedTrace(recordId: recordId)
+            lastError = nil
+            return trace
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
+    }
+
+    func createInvestmentTransaction(input: InvestmentFormInput) -> Bool {
+        do {
+            guard let useCases else { return false }
+            let created = try useCases.createInvestmentTransaction(input: try input.toCreateInput())
+            accountMonth = created.accountMonth
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func updateInvestmentTransaction(id: UUID, input: InvestmentFormInput) -> Bool {
+        do {
+            guard let useCases else { return false }
+            let updated = try useCases.updateInvestmentTransaction(id: id, changes: try input.toChanges())
+            accountMonth = updated.accountMonth
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func deleteInvestmentTransaction(id: UUID) -> Bool {
+        do {
+            guard let useCases else { return false }
+            try useCases.deleteInvestmentTransaction(id: id)
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
         }
     }
 
@@ -399,6 +524,91 @@ struct JournalFormInput: Equatable {
             paymentTypeName: record.paymentTypeName,
             paymentDetailName: record.paymentDetailName,
             note: record.note ?? ""
+        )
+    }
+}
+
+struct InvestmentFormInput: Equatable {
+    var accountMonth = "2026-04"
+    var occurredDateText = "2026-04-10"
+    var fundName = "沪深300指数A"
+    var transactionType: InvestmentTransactionType = .buy
+    var tradeAmountText = ""
+    var tradeShareText = ""
+    var navText = ""
+    var note = ""
+
+    func toCreateInput() throws -> CreateInvestmentTransactionInput {
+        try validateRequiredFields()
+        return CreateInvestmentTransactionInput(
+            accountMonth: accountMonth,
+            occurredAt: try parseDate(),
+            fundName: fundName,
+            transactionType: transactionType,
+            tradeAmount: try parseOptionalDecimal(tradeAmountText, fieldName: "交易金额"),
+            tradeShare: try parseOptionalDecimal(tradeShareText, fieldName: "交易份额"),
+            nav: try parseOptionalDecimal(navText, fieldName: "单位净值"),
+            note: note.isEmpty ? nil : note
+        )
+    }
+
+    func toChanges() throws -> InvestmentTransactionChanges {
+        try validateRequiredFields()
+        return InvestmentTransactionChanges(
+            accountMonth: accountMonth,
+            occurredAt: try parseDate(),
+            fundName: fundName,
+            transactionType: transactionType,
+            tradeAmount: try parseOptionalDecimal(tradeAmountText, fieldName: "交易金额"),
+            tradeShare: try parseOptionalDecimal(tradeShareText, fieldName: "交易份额"),
+            nav: try parseOptionalDecimal(navText, fieldName: "单位净值"),
+            note: note
+        )
+    }
+
+    private func validateRequiredFields() throws {
+        if accountMonth.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw MingZhangError.validation("账月不能为空")
+        }
+        if fundName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw MingZhangError.validation("标的名称不能为空")
+        }
+    }
+
+    private func parseDate() throws -> Date {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let date = formatter.date(from: occurredDateText.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw MingZhangError.invalidDate(occurredDateText)
+        }
+        return date
+    }
+
+    private func parseOptionalDecimal(_ value: String, fieldName: String) throws -> Decimal? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let amount = Decimal(string: trimmed, locale: Locale(identifier: "en_US_POSIX")) else {
+            throw MingZhangError.validation("\(fieldName)必须是有效数字")
+        }
+        return amount
+    }
+
+    static func from(transaction: InvestmentTransaction) -> InvestmentFormInput {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return InvestmentFormInput(
+            accountMonth: transaction.accountMonth,
+            occurredDateText: formatter.string(from: transaction.occurredAt),
+            fundName: transaction.fundName,
+            transactionType: transaction.transactionType,
+            tradeAmountText: transaction.tradeAmount.map { NSDecimalNumber(decimal: $0).stringValue } ?? "",
+            tradeShareText: transaction.tradeShare.map { NSDecimalNumber(decimal: $0).stringValue } ?? "",
+            navText: transaction.nav.map { NSDecimalNumber(decimal: $0).stringValue } ?? "",
+            note: transaction.note ?? ""
         )
     }
 }
