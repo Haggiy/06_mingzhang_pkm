@@ -1,5 +1,31 @@
 import XCTest
 
+private extension XCUIApplication {
+    func waitForMingZhangTab(_ title: String, timeout: TimeInterval = 10) -> XCUIElement {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let customTab = buttons["tab_\(title)"]
+            if customTab.exists {
+                return customTab
+            }
+
+            let nativeTab = tabBars.buttons[title]
+            if nativeTab.exists {
+                return nativeTab
+            }
+
+            let fallbackButton = buttons[title]
+            if fallbackButton.exists {
+                return fallbackButton
+            }
+
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+
+        return buttons["tab_\(title)"]
+    }
+}
+
 /// 导入记忆预填 UI 集成测试
 /// 通过 launchEnvironment 注入测试数据，绕过剪贴板权限弹窗
 final class ImportMemoryUITests: XCTestCase {
@@ -17,11 +43,17 @@ final class ImportMemoryUITests: XCTestCase {
 
     // MARK: - CSV 模板
 
-    func alipayCSV(counterparty: String, product: String, amount: String = "100.00", orderId: String = "T-001") -> String {
+    func alipayCSV(
+        counterparty: String,
+        product: String,
+        amount: String = "100.00",
+        orderId: String = "T-001",
+        direction: String = "支出"
+    ) -> String {
         return """
         -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
         交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
-        2026-04-15 12:30:45,餐饮美食,\(counterparty),/,\(product),支出,\(amount),广发卡,交易成功,\(orderId)\t,\t,,
+        2026-04-15 12:30:45,餐饮美食,\(counterparty),/,\(product),\(direction),\(amount),广发卡,交易成功,\(orderId)\t,\t,,
         """
     }
 
@@ -58,11 +90,128 @@ final class ImportMemoryUITests: XCTestCase {
         app.launchEnvironment["MZ_TEST_SOURCE"] = source
     }
 
+    // MARK: - 视觉验收截图
+
+    var screenshotDirectory: URL? {
+        let markerPath = "/tmp/mingzhang-v51-screenshots/.enabled"
+        let path: String
+        if let environmentPath = ProcessInfo.processInfo.environment["MZ_SCREENSHOT_DIR"], !environmentPath.isEmpty {
+            path = environmentPath
+        } else if FileManager.default.fileExists(atPath: markerPath) {
+            path = "/tmp/mingzhang-v51-screenshots"
+        } else {
+            return nil
+        }
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    func captureV51Screenshot(_ name: String) {
+        guard let screenshotDirectory else { return }
+        let screenshot = XCUIScreen.main.screenshot()
+        let outputURL = screenshotDirectory.appendingPathComponent("\(name).png")
+        try? screenshot.pngRepresentation.write(to: outputURL)
+    }
+
+    var isCapturingV51Screenshots: Bool {
+        screenshotDirectory != nil
+    }
+
     // MARK: - 导航
 
+    func testV51PrimaryTabsExposeCoreSectionsAndQuickMenu() {
+        continueAfterFailure = false
+        addSetupStep(
+            index: 0,
+            csv: alipayCSV(counterparty: "基金平台", product: "投资收益", amount: "6100.00", orderId: "V51-INC-1", direction: "收入"),
+            type: "理财收入",
+            detail: "投资收益"
+        )
+        addSetupStep(
+            index: 1,
+            csv: alipayCSV(counterparty: "早餐铺", product: "早午餐", amount: "28.50", orderId: "V51-EXP-1"),
+            type: "生活必要开支",
+            detail: "伙食费"
+        )
+        addSetupStep(
+            index: 2,
+            csv: alipayCSV(counterparty: "游乐店", product: "周末消费", amount: "88.00", orderId: "V51-EXP-2"),
+            type: "文娱游购开支",
+            detail: "饮食游乐费"
+        )
+        addSetupStep(
+            index: 3,
+            csv: alipayCSV(counterparty: "基金平台", product: "赎回亏损", amount: "32.00", orderId: "V51-EXP-3"),
+            type: "财务费用开支",
+            detail: "投资亏损"
+        )
+        app.launch()
+
+        XCTAssertTrue(app.waitForMingZhangTab("首页").exists)
+        XCTAssertTrue(app.staticTexts["收支摘要"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["收入结构"].exists)
+        XCTAssertTrue(app.staticTexts["支出结构"].exists)
+        XCTAssertTrue(app.staticTexts["最近账目"].exists)
+        captureV51Screenshot("01-首页")
+
+        XCTAssertTrue(app.buttons["btn_home_quick_add"].exists)
+        app.buttons["btn_home_quick_add"].tap()
+        XCTAssertTrue(app.buttons["记一笔"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["导入账单"].exists)
+        XCTAssertTrue(app.buttons["查找"].exists)
+        captureV51Screenshot("02-首页-快捷菜单")
+
+        app.buttons["btn_home_quick_close"].tap()
+        XCTAssertFalse(app.buttons["btn_home_quick_close"].exists)
+
+        app.waitForMingZhangTab("流水").tap()
+        let recordCountLabel = app.staticTexts.containing(NSPredicate(format: "label CONTAINS '共'")).firstMatch
+        XCTAssertTrue(recordCountLabel.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["搜索"].exists)
+        XCTAssertTrue(app.buttons["点击这里记一笔"].exists)
+        XCTAssertTrue(app.buttons["筛选"].exists)
+        captureV51Screenshot("03-流水")
+
+        if isCapturingV51Screenshots {
+            let firstRecord = app.buttons.matching(NSPredicate(format: "label CONTAINS '/'")).firstMatch
+            if firstRecord.waitForExistence(timeout: 2) {
+                firstRecord.tap()
+                if app.staticTexts["记录详情"].waitForExistence(timeout: 3) {
+                    captureV51Screenshot("04-记录详情")
+                }
+                if app.buttons["返回"].exists {
+                    app.buttons["返回"].tap()
+                } else if app.navigationBars.buttons.firstMatch.exists {
+                    app.navigationBars.buttons.firstMatch.tap()
+                } else if app.buttons["chevron.left"].exists {
+                    app.buttons["chevron.left"].tap()
+                }
+            }
+        }
+
+        app.waitForMingZhangTab("资产负债").tap()
+        XCTAssertTrue(app.staticTexts["资产合计"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["负债合计"].exists)
+        XCTAssertTrue(app.staticTexts["净资产"].exists)
+        captureV51Screenshot("05-资产负债")
+
+        app.waitForMingZhangTab("统计").tap()
+        XCTAssertTrue(app.staticTexts["结果总览"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["资产负债变化"].exists)
+        XCTAssertTrue(app.staticTexts["投资结果"].exists)
+        captureV51Screenshot("06-统计")
+
+        app.waitForMingZhangTab("设置").tap()
+        XCTAssertTrue(app.staticTexts["记账配置"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["数据管理"].exists)
+        XCTAssertTrue(app.staticTexts["App 设置"].exists)
+        captureV51Screenshot("07-设置")
+    }
+
     func navigateToImport(source: String) {
-        XCTAssertTrue(app.tabBars.buttons["流水"].waitForExistence(timeout: 10))
-        app.tabBars.buttons["流水"].tap()
+        XCTAssertTrue(app.waitForMingZhangTab("流水").exists)
+        app.waitForMingZhangTab("流水").tap()
         sleep(1)
         XCTAssertTrue(app.buttons["导入账单"].waitForExistence(timeout: 5))
         app.buttons["导入账单"].tap()
@@ -98,6 +247,7 @@ final class ImportMemoryUITests: XCTestCase {
 
         navigateToImport(source: "alipay")
         assertClassificationDisplayed(type: "生活必要开支", detail: "伙食费")
+        captureV51Screenshot("08-导入整理")
     }
 
     // MARK: - TC-002: 同商户不同商品
@@ -221,8 +371,8 @@ final class InvestmentLedgerUITests: XCTestCase {
     func testInvestmentLedgerShowsInvestmentAssetEntryAndFundRow() {
         app.launch()
 
-        XCTAssertTrue(app.tabBars.buttons["资产负债"].waitForExistence(timeout: 10))
-        app.tabBars.buttons["资产负债"].tap()
+        XCTAssertTrue(app.waitForMingZhangTab("资产负债").exists)
+        app.waitForMingZhangTab("资产负债").tap()
 
         XCTAssertTrue(app.buttons["investment_asset_entry"].waitForExistence(timeout: 10))
         app.buttons["investment_asset_entry"].tap()

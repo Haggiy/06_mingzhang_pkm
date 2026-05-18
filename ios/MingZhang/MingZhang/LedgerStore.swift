@@ -86,6 +86,9 @@ final class LedgerStore: ObservableObject {
             }
             stepIndex += 1
         }
+        if stepIndex > 0 {
+            try refresh()
+        }
 
         // 处理待验证的测试导入（通过 store 方法确保所有状态正确更新）
         if let testCSV = env["MZ_TEST_CSV"] {

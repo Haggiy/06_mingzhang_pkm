@@ -1,38 +1,25 @@
 import SwiftUI
+import Combine
 import MingZhangCore
 import UniformTypeIdentifiers
 import UIKit
 
 struct RootView: View {
     @EnvironmentObject private var store: LedgerStore
+    @State private var selectedTab: MZRootTab = .home
+    @StateObject private var tabVisibility = MZRootTabVisibility()
 
     var body: some View {
-        TabView {
-            HomeView()
-                .tabItem {
-                    Label("首页", systemImage: "house")
-                }
+        ZStack(alignment: .bottom) {
+            selectedTabView
+                .environmentObject(tabVisibility)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            JournalView()
-                .tabItem {
-                    Label("流水", systemImage: "list.bullet.rectangle")
-                }
-
-            BalanceView()
-                .tabItem {
-                    Label("资产负债", systemImage: "chart.pie")
-                }
-
-            StatisticsView()
-                .tabItem {
-                    Label("统计", systemImage: "chart.bar")
-                }
-
-            SettingsView()
-                .tabItem {
-                    Label("设置", systemImage: "gearshape")
-                }
+            if !tabVisibility.isHidden {
+                MZRootTabBar(selectedTab: $selectedTab)
+            }
         }
+        .background(MZTheme.page.ignoresSafeArea())
         .alert("处理失败", isPresented: Binding(
             get: { store.lastError != nil },
             set: { if !$0 { store.lastError = nil } }
@@ -42,105 +29,1020 @@ struct RootView: View {
             Text(store.lastError ?? "")
         }
     }
+
+    @ViewBuilder
+    private var selectedTabView: some View {
+        switch selectedTab {
+        case .home:
+            HomeView()
+        case .journal:
+            JournalView()
+        case .balance:
+            BalanceView()
+        case .statistics:
+            StatisticsView()
+        case .settings:
+            SettingsView()
+        }
+    }
 }
+
+// MARK: - 视觉系统
+
+private final class MZRootTabVisibility: ObservableObject {
+    @Published var isHidden = false
+}
+
+private enum MZRootTab: String, CaseIterable, Identifiable {
+    case home
+    case journal
+    case balance
+    case statistics
+    case settings
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .home: "首页"
+        case .journal: "流水"
+        case .balance: "资产负债"
+        case .statistics: "统计"
+        case .settings: "设置"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .home: "house"
+        case .journal: "list.bullet.rectangle"
+        case .balance: "briefcase"
+        case .statistics: "chart.bar"
+        case .settings: "gearshape"
+        }
+    }
+}
+
+private enum MZTheme {
+    static let accent = Color(red: 0.00, green: 0.62, blue: 0.57)
+    static let accentDark = Color(red: 0.00, green: 0.45, blue: 0.42)
+    static let ink = Color(red: 0.03, green: 0.09, blue: 0.18)
+    static let secondaryInk = Color(red: 0.38, green: 0.45, blue: 0.56)
+    static let tertiaryInk = Color(red: 0.58, green: 0.63, blue: 0.70)
+    static let line = Color(red: 0.88, green: 0.90, blue: 0.93)
+    static let page = Color(red: 0.985, green: 0.99, blue: 0.99)
+    static let card = Color.white
+    static let navy = Color(red: 0.06, green: 0.14, blue: 0.22)
+    static let blue = Color(red: 0.18, green: 0.42, blue: 0.88)
+    static let violet = Color(red: 0.53, green: 0.49, blue: 0.78)
+    static let sage = Color(red: 0.55, green: 0.66, blue: 0.64)
+    static let mist = Color(red: 0.82, green: 0.85, blue: 0.90)
+    static let danger = Color(red: 0.86, green: 0.08, blue: 0.12)
+
+    static let categoryColors: [Color] = [accent, blue, violet, sage, mist]
+}
+
+private struct MZRootTabBar: View {
+    @Binding var selectedTab: MZRootTab
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(MZRootTab.allCases) { tab in
+                Button {
+                    selectedTab = tab
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: tab.systemImage)
+                            .font(.system(size: 20, weight: selectedTab == tab ? .semibold : .regular))
+                            .symbolVariant(selectedTab == tab ? .fill : .none)
+                            .frame(height: 24)
+                        Text(tab.title)
+                            .font(.caption2.weight(selectedTab == tab ? .semibold : .regular))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                    }
+                    .foregroundStyle(selectedTab == tab ? MZTheme.accent : MZTheme.tertiaryInk)
+                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tab.title)
+                .accessibilityIdentifier("tab_\(tab.title)")
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 7)
+        .padding(.bottom, 6)
+        .frame(maxWidth: .infinity)
+        .background(MZTheme.card.ignoresSafeArea(edges: .bottom))
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(MZTheme.line.opacity(0.85))
+                .frame(height: 0.8)
+        }
+    }
+}
+
+private struct MZCard<Content: View>: View {
+    var padding: CGFloat = 16
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            content
+        }
+        .padding(padding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(MZTheme.card)
+                .shadow(color: .black.opacity(0.045), radius: 12, x: 0, y: 6)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(MZTheme.line.opacity(0.8), lineWidth: 0.8)
+        )
+    }
+}
+
+private struct MZPage<Content: View>: View {
+    var bottomInset: CGFloat = 24
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                content
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 18)
+            .padding(.bottom, bottomInset)
+        }
+        .background(MZTheme.page.ignoresSafeArea())
+        .scrollIndicators(.hidden)
+    }
+}
+
+private struct MZTopBar: View {
+    var title: String?
+    var monthTitle: String?
+    var showsCalendar: Bool = false
+    var onMonthTap: (() -> Void)?
+
+    var body: some View {
+        if let title, monthTitle == nil {
+            HStack {
+                Spacer(minLength: 44)
+                Text(title)
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(MZTheme.ink)
+                Spacer(minLength: 44)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 4)
+        } else {
+            HStack(alignment: .center) {
+                if let title {
+                    Text(title)
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                } else {
+                    Spacer(minLength: 0)
+                }
+
+                Spacer(minLength: 12)
+
+                if let monthTitle {
+                    Button {
+                        onMonthTap?()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(monthTitle)
+                                .font(.title2.weight(.semibold))
+                            Image(systemName: "chevron.down")
+                                .font(.subheadline.weight(.bold))
+                        }
+                        .foregroundStyle(MZTheme.ink)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("btn_month_picker")
+                }
+
+                Spacer(minLength: 12)
+
+                if showsCalendar {
+                    Button {
+                        onMonthTap?()
+                    } label: {
+                        Image(systemName: "calendar")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(MZTheme.accent)
+                            .frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("账月范围")
+                } else if title != nil {
+                    Color.clear.frame(width: 44, height: 44)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 4)
+        }
+    }
+}
+
+private struct MZBackHeader: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var tabVisibility: MZRootTabVisibility
+    let title: String
+    var trailingSystemImage: String?
+    var trailingAction: (() -> Void)?
+
+    var body: some View {
+        HStack {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(MZTheme.accent)
+                    .frame(width: 44, height: 44, alignment: .leading)
+            }
+            .accessibilityLabel("返回")
+
+            Spacer()
+            Text(title)
+                .font(.title2.weight(.bold))
+                .foregroundStyle(MZTheme.ink)
+            Spacer()
+
+            if let trailingSystemImage {
+                Button {
+                    trailingAction?()
+                } label: {
+                    Image(systemName: trailingSystemImage)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(MZTheme.ink)
+                        .frame(width: 44, height: 44, alignment: .trailing)
+                }
+            } else {
+                Color.clear.frame(width: 44, height: 44)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .background(MZTheme.page)
+        .onAppear {
+            tabVisibility.isHidden = true
+        }
+        .onDisappear {
+            tabVisibility.isHidden = false
+        }
+    }
+}
+
+private struct MZMetricTriplet: View {
+    let items: [(String, Decimal)]
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                VStack(spacing: 8) {
+                    Text(item.0)
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                    Text(item.1.moneyText)
+                        .font(.title3.weight(.bold))
+                        .monospacedDigit()
+                        .foregroundStyle(MZTheme.ink)
+                        .minimumScaleFactor(0.72)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity)
+
+                if index < items.count - 1 {
+                    Rectangle()
+                        .fill(MZTheme.line)
+                        .frame(width: 1, height: 42)
+                }
+            }
+        }
+    }
+}
+
+private struct CategoryDisplayItem: Identifiable, Hashable {
+    let id = UUID()
+    let name: String
+    let amount: Decimal
+    let color: Color
+    let sourceRecordIds: [UUID]
+
+    static func == (lhs: CategoryDisplayItem, rhs: CategoryDisplayItem) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+}
+
+private struct MZStructureCard: View {
+    let title: String
+    let total: Decimal
+    let items: [CategoryDisplayItem]
+    var onItemTap: ((CategoryDisplayItem) -> Void)?
+
+    var body: some View {
+        MZCard {
+            HStack {
+                Text(title)
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(MZTheme.ink)
+                Spacer()
+                Text(total.moneyText)
+                    .font(.headline.weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(MZTheme.ink)
+            }
+
+            MZStackedBar(items: items, total: total)
+
+            if items.isEmpty {
+                MZEmptyState(title: "暂无\(title)", systemImage: "chart.pie")
+                    .frame(maxWidth: .infinity)
+            } else {
+                VStack(spacing: 12) {
+                    ForEach(items) { item in
+                        Button {
+                            onItemTap?(item)
+                        } label: {
+                            HStack(spacing: 12) {
+                                Circle()
+                                    .fill(item.color)
+                                    .frame(width: 10, height: 10)
+                                Text(item.name)
+                                    .foregroundStyle(MZTheme.ink)
+                                Spacer()
+                                Text(item.amount.moneyText)
+                                    .fontWeight(.semibold)
+                                    .monospacedDigit()
+                                    .foregroundStyle(MZTheme.ink)
+                                Text(item.percentText(of: total))
+                                    .frame(width: 58, alignment: .trailing)
+                                    .foregroundStyle(MZTheme.secondaryInk)
+                            }
+                            .font(.body)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct MZStackedBar: View {
+    let items: [CategoryDisplayItem]
+    let total: Decimal
+
+    var body: some View {
+        GeometryReader { proxy in
+            HStack(spacing: 2) {
+                if total.doubleValue == 0 || items.isEmpty {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(MZTheme.mist)
+                        .frame(width: proxy.size.width)
+                } else {
+                    ForEach(items) { item in
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(item.color)
+                            .frame(width: max(4, proxy.size.width * item.percentCGFloat(of: total)))
+                    }
+                    if items.reduce(0.0, { $0 + $1.percentCGFloat(of: total) }) < 0.985 {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(MZTheme.mist)
+                    }
+                }
+            }
+        }
+        .frame(height: 14)
+    }
+}
+
+private struct MZRecordRow: View {
+    let record: JournalRecord
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(record.occurredAt.recordListText)
+                    .font(.body)
+                    .foregroundStyle(MZTheme.ink)
+                Spacer()
+                Text(record.paymentMethodName)
+                    .foregroundStyle(MZTheme.secondaryInk)
+                Text(record.amount.moneyText)
+                    .font(.headline.weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(MZTheme.ink)
+                    .frame(minWidth: 86, alignment: .trailing)
+            }
+
+            if record.recordKind == .carryForward {
+                Label("固定", systemImage: "arrow.clockwise")
+                    .font(.caption)
+                    .foregroundStyle(MZTheme.secondaryInk)
+            }
+
+            Text("\(record.paymentTypeName) / \(record.paymentDetailName)\(record.noteTextSuffix)")
+                .font(.subheadline)
+                .foregroundStyle(MZTheme.secondaryInk)
+                .lineLimit(2)
+        }
+        .padding(.vertical, 14)
+        .accessibilityIdentifier("journal_record_row_\(record.id.uuidString.prefix(8))")
+    }
+}
+
+private struct MZDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(MZTheme.line)
+            .frame(height: 1)
+    }
+}
+
+private struct MZPrimaryButton: View {
+    let title: String
+    var systemImage: String?
+    var isDisabled = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                }
+                Text(title)
+                    .fontWeight(.bold)
+            }
+            .font(.body)
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 56)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isDisabled ? MZTheme.tertiaryInk : MZTheme.navy)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+    }
+}
+
+private struct MZLightButton: View {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                Text(title)
+                    .fontWeight(.semibold)
+            }
+            .font(.body)
+            .foregroundStyle(MZTheme.accent)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(MZTheme.card)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(MZTheme.line, lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct MZIconRow: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    var tint: Color = MZTheme.accent
+    var trailing: String?
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Image(systemName: systemImage)
+                .font(.title2.weight(.medium))
+                .foregroundStyle(tint)
+                .frame(width: 44, height: 44)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(MZTheme.ink)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                }
+            }
+
+            Spacer()
+
+            if let trailing {
+                Text(trailing)
+                    .font(.headline.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(tint)
+            }
+
+            Image(systemName: "chevron.right")
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(MZTheme.secondaryInk)
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+private struct MZEmptyState: View {
+    let title: String
+    var systemImage: String
+    var subtitle: String?
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.title2)
+                .foregroundStyle(MZTheme.tertiaryInk)
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(MZTheme.secondaryInk)
+            if let subtitle {
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(MZTheme.tertiaryInk)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(.vertical, 20)
+    }
+}
+
+private struct MZFieldRow<Content: View>: View {
+    let title: String
+    var required = false
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(MZTheme.ink)
+                if required {
+                    Text("*")
+                        .foregroundStyle(MZTheme.danger)
+                }
+            }
+            .frame(width: 104, alignment: .leading)
+
+            Spacer(minLength: 8)
+
+            content
+                .multilineTextAlignment(.trailing)
+        }
+        .frame(minHeight: 56)
+    }
+}
+
+private struct MZMenuRow: View {
+    let title: String
+    var required = false
+    @Binding var selection: String
+    let options: [String]
+
+    var body: some View {
+        MZFieldRow(title: title, required: required) {
+            Menu {
+                ForEach(options, id: \.self) { option in
+                    Button(option.isEmpty ? "未选择" : option) {
+                        selection = option
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(selection.isEmpty ? "未选择" : selection)
+                        .foregroundStyle(selection.isEmpty ? MZTheme.tertiaryInk : MZTheme.ink)
+                    Image(systemName: "chevron.right")
+                        .foregroundStyle(MZTheme.accent)
+                }
+            }
+        }
+    }
+}
+
+private struct MZPlaceholderPage: View {
+    let title: String
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: title)
+            MZPage {
+                MZCard {
+                    MZEmptyState(title: title, systemImage: "doc.text", subtitle: message)
+                }
+            }
+        }
+        .navigationBarBackButtonHidden(true)
+        .background(MZTheme.page)
+    }
+}
+
+// MARK: - 全局账月
 
 struct MonthPickerView: View {
     @EnvironmentObject private var store: LedgerStore
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section("账月") {
+        VStack(spacing: 0) {
+            MZBackHeader(title: "账月范围")
+            MZPage {
+                MZCard {
+                    Text("快捷范围")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+
+                    MonthOptionRow(title: "当前账月", value: store.accountMonth.displayMonth, isSelected: true) {
+                        dismiss()
+                    }
+
+                    disabledOption("全部", detail: "后续支持全部历史范围")
+                    disabledOption("YTD", detail: "后续支持年初至今")
+                    disabledOption("自定义范围", detail: "后续支持起止账月")
+                }
+
+                MZCard {
+                    Text("账月列表")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+
                     ForEach(store.availableAccountMonths, id: \.self) { month in
-                        Button {
+                        MonthOptionRow(
+                            title: month.displayMonth,
+                            value: month,
+                            isSelected: month == store.accountMonth
+                        ) {
                             if store.selectAccountMonth(month) {
                                 dismiss()
-                            }
-                        } label: {
-                            HStack {
-                                Text(month)
-                                Spacer()
-                                if month == store.accountMonth {
-                                    Image(systemName: "checkmark")
-                                        .foregroundStyle(.tint)
-                                }
                             }
                         }
                     }
                 }
             }
-            .navigationTitle("选择账月")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") {
-                        dismiss()
-                    }
-                }
-            }
         }
+        .background(MZTheme.page.ignoresSafeArea())
+        .navigationBarBackButtonHidden(true)
+    }
+
+    private func disabledOption(_ title: String, detail: String) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(MZTheme.ink)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(MZTheme.tertiaryInk)
+            }
+            Spacer()
+            Text("暂未接入")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(MZTheme.tertiaryInk)
+        }
+        .padding(.vertical, 8)
     }
 }
+
+private struct MonthOptionRow: View {
+    let title: String
+    let value: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(MZTheme.ink)
+                    Text(value)
+                        .font(.caption)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                }
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(MZTheme.accent)
+                }
+            }
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - 首页
 
 struct HomeView: View {
     @EnvironmentObject private var store: LedgerStore
     @State private var isShowingForm = false
     @State private var isShowingMonthPicker = false
+    @State private var isShowingQuickMenu = false
+    @State private var isShowingImport = false
+    @State private var isShowingSearch = false
+    @State private var selectedCategory: CategoryDisplayItem?
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("\(store.accountMonth) 摘要") {
-                    SummaryRow(title: "收入", value: store.homeSummary.incomeTotal)
-                    SummaryRow(title: "支出", value: store.homeSummary.expenseTotal)
-                    SummaryRow(title: "结余", value: store.homeSummary.balance)
+            ZStack(alignment: .bottomTrailing) {
+                MZPage(bottomInset: 156) {
+                    MZTopBar(
+                        monthTitle: store.accountMonth.displayMonth,
+                        showsCalendar: true,
+                        onMonthTap: { isShowingMonthPicker = true }
+                    )
+
+                    MZCard {
+                        Text("收支摘要")
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(MZTheme.ink)
+                        MZMetricTriplet(items: [
+                            ("收入", store.homeSummary.incomeTotal),
+                            ("支出", store.homeSummary.expenseTotal),
+                            ("结余", store.homeSummary.balance)
+                        ])
+                    }
+
+                    MZStructureCard(
+                        title: "收入结构",
+                        total: store.homeSummary.incomeTotal,
+                        items: categoryItems(for: .income),
+                        onItemTap: { selectedCategory = $0 }
+                    )
+
+                    MZStructureCard(
+                        title: "支出结构",
+                        total: store.homeSummary.expenseTotal,
+                        items: categoryItems(for: .expense),
+                        onItemTap: { selectedCategory = $0 }
+                    )
+
+                    recentRecordsCard
                 }
 
-                Section("最近账目") {
-                    if store.records.isEmpty {
-                        ContentUnavailableView("暂无流水", systemImage: "tray")
-                    } else {
-                        ForEach(store.records.suffix(5).reversed()) { record in
-                            NavigationLink {
-                                JournalFormView(mode: .edit(record))
-                            } label: {
-                                JournalRecordRow(record: record)
-                            }
+                if isShowingQuickMenu {
+                    VStack(alignment: .trailing, spacing: 10) {
+                        QuickMenuButton(title: "记一笔", systemImage: "pencil") {
+                            isShowingQuickMenu = false
+                            isShowingForm = true
                         }
+                        QuickMenuButton(title: "导入账单", systemImage: "tray.and.arrow.down") {
+                            isShowingQuickMenu = false
+                            isShowingImport = true
+                        }
+                        QuickMenuButton(title: "查找", systemImage: "magnifyingglass") {
+                            isShowingQuickMenu = false
+                            isShowingSearch = true
+                        }
+                        Button {
+                            isShowingQuickMenu = false
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(MZTheme.secondaryInk)
+                                .frame(width: 54, height: 54)
+                                .background(Circle().fill(MZTheme.card))
+                        }
+                        .accessibilityIdentifier("btn_home_quick_close")
                     }
+                    .padding(.trailing, 18)
+                    .padding(.bottom, 92)
+                    .accessibilityElement(children: .contain)
+                } else {
+                    Button {
+                        isShowingQuickMenu = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.largeTitle.weight(.regular))
+                            .foregroundStyle(MZTheme.accent)
+                            .frame(width: 62, height: 62)
+                            .background(Circle().fill(MZTheme.card))
+                            .shadow(color: .black.opacity(0.12), radius: 12, x: 0, y: 4)
+                    }
+                    .accessibilityIdentifier("btn_home_quick_add")
+                    .padding(.trailing, 18)
+                    .padding(.bottom, 92)
                 }
             }
-            .navigationTitle("明账")
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Button {
-                        isShowingMonthPicker = true
-                    } label: {
-                        Label(store.accountMonth, systemImage: "calendar")
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .accessibilityIdentifier("btn_month_picker")
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        isShowingForm = true
-                    } label: {
-                        Label("记一笔", systemImage: "plus")
-                    }
-                    .accessibilityIdentifier("btn_new_record")
-                }
+            .navigationDestination(item: $selectedCategory) { category in
+                CategoryDetailView(category: category, total: categoryTotal(for: category))
             }
             .sheet(isPresented: $isShowingForm) {
-                NavigationStack {
-                    JournalFormView(mode: .create)
-                }
+                NavigationStack { JournalFormView(mode: .create) }
             }
             .sheet(isPresented: $isShowingMonthPicker) {
                 MonthPickerView()
             }
+            .sheet(isPresented: $isShowingImport) {
+                ImportSourcePickerView()
+            }
+            .navigationDestination(isPresented: $isShowingSearch) {
+                JournalSearchView()
+            }
+            .toolbar(.hidden, for: .navigationBar)
+        }
+    }
+
+    private var recentRecordsCard: some View {
+        MZCard {
+            HStack {
+                Text("最近账目")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(MZTheme.ink)
+                Spacer()
+                NavigationLink {
+                    JournalView()
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("全部")
+                        Image(systemName: "chevron.right")
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(MZTheme.secondaryInk)
+                }
+            }
+
+            let records = Array(store.records.suffix(4).reversed())
+            if records.isEmpty {
+                MZEmptyState(title: "暂无账目", systemImage: "tray", subtitle: "可以从右下角记一笔开始")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(records.enumerated()), id: \.element.id) { index, record in
+                        NavigationLink {
+                            destination(for: record)
+                        } label: {
+                            HStack(spacing: 14) {
+                                Text(record.occurredAt.recentDayText)
+                                    .font(.subheadline)
+                                    .foregroundStyle(MZTheme.secondaryInk)
+                                    .frame(width: 70, alignment: .leading)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(record.note?.isEmpty == false ? record.note! : record.paymentDetailName)
+                                        .font(.headline.weight(.semibold))
+                                        .foregroundStyle(MZTheme.ink)
+                                    Text("\(record.paymentTypeName) · \(record.paymentDetailName)")
+                                        .font(.subheadline)
+                                        .foregroundStyle(MZTheme.secondaryInk)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Text(record.amount.moneyText)
+                                    .font(.headline.weight(.bold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(MZTheme.ink)
+                            }
+                            .padding(.vertical, 10)
+                        }
+                        .buttonStyle(.plain)
+
+                        if index < records.count - 1 {
+                            MZDivider()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func categoryItems(for element: AccountingElement) -> [CategoryDisplayItem] {
+        let typeNames = Set(store.types.filter { $0.element == element }.map(\.name))
+        let grouped = Dictionary(grouping: store.records.filter { typeNames.contains($0.paymentTypeName) }, by: \.paymentTypeName)
+        return grouped.keys.sorted().enumerated().map { index, name in
+            let records = grouped[name] ?? []
+            return CategoryDisplayItem(
+                name: name,
+                amount: records.reduce(Decimal.zero) { $0 + $1.amount.absoluteValue },
+                color: MZTheme.categoryColors[index % MZTheme.categoryColors.count],
+                sourceRecordIds: records.map(\.id)
+            )
+        }
+    }
+
+    private func categoryTotal(for category: CategoryDisplayItem) -> Decimal {
+        let incomeNames = Set(store.types.filter { $0.element == .income }.map(\.name))
+        return incomeNames.contains(category.name) ? store.homeSummary.incomeTotal : store.homeSummary.expenseTotal
+    }
+
+    @ViewBuilder
+    private func destination(for record: JournalRecord) -> some View {
+        if record.isDirectlyEditable {
+            JournalFormView(mode: .edit(record))
+        } else {
+            ReadOnlyRecordDetailView(record: record)
         }
     }
 }
+
+private struct QuickMenuButton: View {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Text(title)
+                    .font(.headline.weight(.semibold))
+                Image(systemName: systemImage)
+                    .font(.headline.weight(.semibold))
+            }
+            .foregroundStyle(MZTheme.ink)
+            .padding(.horizontal, 18)
+            .frame(height: 54)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(MZTheme.card)
+                    .shadow(color: .black.opacity(0.12), radius: 10, x: 0, y: 4)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct CategoryDetailView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let category: CategoryDisplayItem
+    let total: Decimal
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: category.name)
+            MZPage {
+                MZCard {
+                    Text(category.name)
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                    Text(category.amount.moneyText)
+                        .font(.largeTitle.weight(.bold))
+                        .monospacedDigit()
+                        .foregroundStyle(MZTheme.ink)
+                    Text("占比 \(category.percentText(of: total))")
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                }
+
+                MZCard {
+                    Text("最近账目")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                    NavigationLink {
+                        SourceRecordsView(
+                            title: "\(category.name) 来源",
+                            filterDescription: "\(store.accountMonth.displayMonth) / \(category.name)",
+                            recordIds: category.sourceRecordIds
+                        )
+                    } label: {
+                        HStack {
+                            Text("查看来源")
+                            Spacer()
+                            Text("\(category.sourceRecordIds.count) 条")
+                            Image(systemName: "chevron.right")
+                        }
+                        .foregroundStyle(MZTheme.accent)
+                    }
+                }
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+    }
+}
+
+// MARK: - 流水
 
 struct JournalView: View {
     @EnvironmentObject private var store: LedgerStore
@@ -148,74 +1050,54 @@ struct JournalView: View {
     @State private var isShowingMonthPicker = false
     @State private var isShowingFilter = false
     @State private var isShowingImport = false
+    @State private var isShowingSearch = false
 
     var body: some View {
         NavigationStack {
-            List {
-                if store.journalFilter != JournalRecordFilter(accountMonths: [store.accountMonth]) {
-                    Section("当前筛选") {
-                        Button {
-                            _ = store.clearJournalFilter()
-                        } label: {
-                            Label("清除筛选", systemImage: "xmark.circle")
+            ZStack(alignment: .bottom) {
+                MZPage(bottomInset: 188) {
+                    MZTopBar(
+                        monthTitle: store.accountMonth.displayMonth,
+                        showsCalendar: true,
+                        onMonthTap: { isShowingMonthPicker = true }
+                    )
+
+                    HStack(spacing: 10) {
+                        MZLightButton(title: "导入账单", systemImage: "tray.and.arrow.down") {
+                            isShowingImport = true
+                        }
+                        .accessibilityIdentifier("btn_journal_import_bill")
+
+                        MZLightButton(title: "新增记录", systemImage: "plus") {
+                            isShowingForm = true
+                        }
+                        .accessibilityIdentifier("btn_new_record_journal")
+                    }
+
+                    if store.journalFilter != JournalRecordFilter(accountMonths: [store.accountMonth]) {
+                        MZCard {
+                            HStack(spacing: 8) {
+                                Label("当前筛选", systemImage: "line.3.horizontal.decrease.circle")
+                                    .font(.headline.weight(.semibold))
+                                    .foregroundStyle(MZTheme.ink)
+                                Spacer()
+                                Button("清除筛选") {
+                                    _ = store.clearJournalFilter()
+                                }
+                                .foregroundStyle(MZTheme.accent)
+                            }
                         }
                     }
+
+                    recordsCard
                 }
 
-                if store.records.isEmpty {
-                    ContentUnavailableView("当前账月暂无流水", systemImage: "tray")
-                } else {
-                    ForEach(store.records) { record in
-                        NavigationLink {
-                            JournalFormView(mode: .edit(record))
-                        } label: {
-                            JournalRecordRow(record: record)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("流水")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        isShowingFilter = true
-                    } label: {
-                        Label("筛选", systemImage: "line.3.horizontal.decrease.circle")
-                    }
-                }
-                ToolbarItem(placement: .principal) {
-                    Button {
-                        isShowingMonthPicker = true
-                    } label: {
-                        Label(store.accountMonth, systemImage: "calendar")
-                            .labelStyle(.titleAndIcon)
-                    }
-                }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button {
-                        isShowingImport = true
-                    } label: {
-                        Label("导入账单", systemImage: "square.and.arrow.down")
-                    }
-                    NavigationLink {
-                        JournalSearchView()
-                    } label: {
-                        Label("搜索", systemImage: "magnifyingglass")
-                    }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        isShowingForm = true
-                    } label: {
-                        Label("记一笔", systemImage: "plus")
-                    }
-                    .accessibilityIdentifier("btn_new_record_journal")
-                }
+                bottomActionBar
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 84)
             }
             .sheet(isPresented: $isShowingForm) {
-                NavigationStack {
-                    JournalFormView(mode: .create)
-                }
+                NavigationStack { JournalFormView(mode: .create) }
             }
             .sheet(isPresented: $isShowingMonthPicker) {
                 MonthPickerView()
@@ -226,7 +1108,92 @@ struct JournalView: View {
             .sheet(isPresented: $isShowingImport) {
                 ImportSourcePickerView()
             }
+            .navigationDestination(isPresented: $isShowingSearch) {
+                JournalSearchView()
+            }
+            .toolbar(.hidden, for: .navigationBar)
         }
+    }
+
+    private var recordsCard: some View {
+        MZCard(padding: 0) {
+            VStack(spacing: 0) {
+                if store.records.isEmpty {
+                    MZEmptyState(title: "当前账月暂无流水", systemImage: "tray", subtitle: "点击底部按钮记一笔或导入账单")
+                        .frame(maxWidth: .infinity)
+                        .padding(20)
+                } else {
+                    ForEach(Array(store.records.enumerated()), id: \.element.id) { index, record in
+                        NavigationLink {
+                            if record.isDirectlyEditable {
+                                JournalFormView(mode: .edit(record))
+                            } else {
+                                ReadOnlyRecordDetailView(record: record)
+                            }
+                        } label: {
+                            MZRecordRow(record: record)
+                                .padding(.horizontal, 16)
+                        }
+                        .buttonStyle(.plain)
+
+                        if index < store.records.count - 1 {
+                            MZDivider()
+                                .padding(.horizontal, 16)
+                        }
+                    }
+                }
+            }
+        }
+        .overlay(alignment: .bottom) {
+            Text("共 \(store.records.count) 条记录")
+                .font(.subheadline)
+                .foregroundStyle(MZTheme.secondaryInk)
+                .offset(y: 42)
+        }
+        .padding(.bottom, 52)
+    }
+
+    private var bottomActionBar: some View {
+        HStack(spacing: 14) {
+            Button {
+                isShowingSearch = true
+            } label: {
+                Label("搜索", systemImage: "magnifyingglass")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(MZTheme.accent)
+                    .frame(width: 86, height: 52)
+            }
+
+            Button {
+                isShowingForm = true
+            } label: {
+                Label("点击这里记一笔", systemImage: "pencil")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.74)
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .background(Capsule().fill(MZTheme.accent))
+            }
+            .accessibilityIdentifier("btn_new_record")
+
+            Button {
+                isShowingFilter = true
+            } label: {
+                Label("筛选", systemImage: "line.3.horizontal.decrease")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(MZTheme.accent)
+                    .frame(width: 86, height: 52)
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 72)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(MZTheme.card)
+                .shadow(color: .black.opacity(0.08), radius: 12, x: 0, y: 4)
+        )
     }
 }
 
@@ -266,52 +1233,39 @@ struct JournalFilterView: View {
     @State private var input = JournalFilterInput()
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("条件") {
-                    Picker("收付手段", selection: $input.paymentMethodName) {
-                        Text("全部").tag("")
-                        ForEach(store.methods) { method in
-                            Text(method.name).tag(method.name)
-                        }
+        VStack(spacing: 0) {
+            MZBackHeader(title: "筛选")
+            MZPage {
+                MZCard {
+                    MZMenuRow(title: "收付手段", selection: $input.paymentMethodName, options: [""] + store.methods.map(\.name))
+                    MZDivider()
+                    MZMenuRow(title: "收付类型", selection: $input.paymentTypeName, options: [""] + store.types.map(\.name))
+                    MZDivider()
+                    MZMenuRow(title: "类型明细", selection: $input.paymentDetailName, options: [""] + filteredDetails.map(\.name))
+                    MZDivider()
+                    MZFieldRow(title: "最小金额") {
+                        TextField("最低金额", text: $input.amountMinText)
+                            .keyboardType(.decimalPad)
                     }
-                    Picker("收付类型", selection: $input.paymentTypeName) {
-                        Text("全部").tag("")
-                        ForEach(store.types) { type in
-                            Text(type.name).tag(type.name)
-                        }
+                    MZDivider()
+                    MZFieldRow(title: "最大金额") {
+                        TextField("最高金额", text: $input.amountMaxText)
+                            .keyboardType(.decimalPad)
                     }
-                    Picker("类型明细", selection: $input.paymentDetailName) {
-                        Text("全部").tag("")
-                        ForEach(filteredDetails) { detail in
-                            Text(detail.name).tag(detail.name)
-                        }
+                    MZDivider()
+                    MZFieldRow(title: "备注关键词") {
+                        TextField("输入关键词", text: $input.noteKeyword)
                     }
-                    TextField("最小金额", text: $input.amountMinText)
-                        .keyboardType(.decimalPad)
-                    TextField("最大金额", text: $input.amountMaxText)
-                        .keyboardType(.decimalPad)
-                    TextField("备注关键词", text: $input.noteKeyword)
                 }
 
-                Section {
-                    Button("重置") {
+                HStack(spacing: 12) {
+                    MZLightButton(title: "重置", systemImage: "arrow.counterclockwise") {
                         input = JournalFilterInput()
                         if store.clearJournalFilter() {
                             dismiss()
                         }
                     }
-                }
-            }
-            .navigationTitle("筛选")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") {
-                        dismiss()
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("应用") {
+                    MZPrimaryButton(title: "应用筛选") {
                         do {
                             if store.applyJournalFilter(try input.toFilter(accountMonth: store.accountMonth)) {
                                 dismiss()
@@ -322,12 +1276,13 @@ struct JournalFilterView: View {
                     }
                 }
             }
-            .onChange(of: input.paymentTypeName) {
-                if !filteredDetails.contains(where: { $0.name == input.paymentDetailName }) {
-                    input.paymentDetailName = ""
-                }
+        }
+        .onChange(of: input.paymentTypeName) {
+            if !filteredDetails.contains(where: { $0.name == input.paymentDetailName }) {
+                input.paymentDetailName = ""
             }
         }
+        .background(MZTheme.page)
     }
 
     private var filteredDetails: [PaymentDetail] {
@@ -344,26 +1299,63 @@ struct JournalSearchView: View {
     @State private var results: [JournalRecord] = []
 
     var body: some View {
-        List {
-            if keyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                ContentUnavailableView("输入关键词", systemImage: "magnifyingglass")
-            } else if results.isEmpty {
-                ContentUnavailableView("没有找到流水", systemImage: "tray")
-            } else {
-                ForEach(results) { record in
-                    NavigationLink {
-                        JournalFormView(mode: .edit(record))
-                    } label: {
-                        JournalRecordRow(record: record)
+        VStack(spacing: 0) {
+            MZBackHeader(title: "搜索")
+            MZPage {
+                MZCard {
+                    HStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(MZTheme.secondaryInk)
+                        TextField("搜索金额、账户、类型、备注", text: $keyword)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(MZTheme.page)
+                    )
+
+                    Text("\(store.accountMonth.displayMonth) · 当前账月")
+                        .font(.caption)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                }
+
+                MZCard(padding: 0) {
+                    if keyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        MZEmptyState(title: "输入关键词", systemImage: "magnifyingglass")
+                            .frame(maxWidth: .infinity)
+                            .padding(20)
+                    } else if results.isEmpty {
+                        MZEmptyState(title: "没有找到流水", systemImage: "tray")
+                            .frame(maxWidth: .infinity)
+                            .padding(20)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(Array(results.enumerated()), id: \.element.id) { index, record in
+                                NavigationLink {
+                                    if record.isDirectlyEditable {
+                                        JournalFormView(mode: .edit(record))
+                                    } else {
+                                        ReadOnlyRecordDetailView(record: record)
+                                    }
+                                } label: {
+                                    MZRecordRow(record: record)
+                                        .padding(.horizontal, 16)
+                                }
+                                .buttonStyle(.plain)
+                                if index < results.count - 1 {
+                                    MZDivider().padding(.horizontal, 16)
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
-        .navigationTitle("搜索")
-        .searchable(text: $keyword, prompt: "金额、账户、分类、备注")
-        .onChange(of: keyword) {
-            search()
-        }
+        .navigationBarBackButtonHidden(true)
+        .background(MZTheme.page)
+        .onChange(of: keyword) { search() }
         .onAppear(perform: search)
     }
 
@@ -384,35 +1376,42 @@ struct JournalSearchView: View {
 }
 
 struct ImportSourcePickerView: View {
-    @EnvironmentObject private var store: LedgerStore
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("来源") {
-                    NavigationLink {
-                        ImportCandidateListView(source: .alipay)
-                    } label: {
-                        Label("支付宝账单", systemImage: "creditcard")
+            VStack(spacing: 0) {
+                MZBackHeader(title: "账单导入")
+                MZPage {
+                    MZCard {
+                        Text("选择账单来源")
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(MZTheme.ink)
+
+                        NavigationLink {
+                            ImportCandidateListView(source: .alipay)
+                        } label: {
+                            MZIconRow(title: "支付宝账单", subtitle: "整理支付宝导出的交易明细", systemImage: "creditcard")
+                        }
+                        .accessibilityIdentifier("import-source-alipay")
+
+                        MZDivider()
+
+                        NavigationLink {
+                            ImportCandidateListView(source: .wechat)
+                        } label: {
+                            MZIconRow(title: "微信账单", subtitle: "整理微信支付账单明细", systemImage: "message")
+                        }
+                        .accessibilityIdentifier("import-source-wechat")
                     }
-                    .accessibilityIdentifier("import-source-alipay")
-                    NavigationLink {
-                        ImportCandidateListView(source: .wechat)
-                    } label: {
-                        Label("微信账单", systemImage: "message")
-                    }
-                    .accessibilityIdentifier("import-source-wechat")
-                }
-            }
-            .navigationTitle("导入账单")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") {
+
+                    MZLightButton(title: "关闭", systemImage: "xmark") {
                         dismiss()
                     }
                 }
             }
+            .background(MZTheme.page)
+            .navigationBarBackButtonHidden(true)
         }
     }
 }
@@ -425,121 +1424,98 @@ struct ImportCandidateListView: View {
     @State private var isShowingBatchEdit = false
 
     var body: some View {
-        List {
-            Section("批次") {
-                LabeledContent("来源", value: source.displayName)
-                LabeledContent("待确认", value: "\(pendingCandidates.count)")
-                LabeledContent("已忽略", value: "\(ignoredCandidates.count)")
-                if let batch = store.activeImportBatch {
-                    LabeledContent("文件", value: batch.fileName ?? "未命名")
+        VStack(spacing: 0) {
+            MZBackHeader(title: "\(source.displayName)账单整理", trailingSystemImage: "questionmark.circle")
+            MZPage(bottomInset: 24) {
+                HStack(spacing: 12) {
+                    statusPill(title: "待确认 \(pendingCandidates.count) 条", isSelected: true)
+                    statusPill(title: "已忽略 \(ignoredCandidates.count) 条", isSelected: false)
                 }
-            }
 
-            if !store.importIssues.isEmpty {
-                Section("问题") {
-                    ForEach(Array(store.importIssues.enumerated()), id: \.offset) { _, issue in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(issue.code.displayName)
-                            if let lineNumber = issue.lineNumber {
-                                Text("第 \(lineNumber) 行")
+                if !store.importIssues.isEmpty {
+                    MZCard {
+                        Text("导入问题")
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(MZTheme.ink)
+                        ForEach(Array(store.importIssues.enumerated()), id: \.offset) { _, issue in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(issue.code.displayName)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(MZTheme.ink)
+                                Text(issue.lineNumber.map { "第 \($0) 行 · \(issue.message)" } ?? issue.message)
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(MZTheme.secondaryInk)
                             }
-                            Text(issue.message)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                         }
                     }
                 }
-            }
 
-            Section("候选") {
-                if store.importCandidates.isEmpty {
-                    ContentUnavailableView("暂无候选", systemImage: "tray")
-                } else {
-                    ForEach(store.importCandidates) { candidate in
-                        HStack(spacing: 12) {
-                            Button {
-                                toggleSelection(candidate.id)
-                            } label: {
-                                Image(systemName: store.selectedImportCandidateIds.contains(candidate.id) ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(candidate.status == .pending ? Color.accentColor : Color.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(candidate.status != .pending)
-                            .accessibilityIdentifier("import-candidate-checkbox-\(candidate.id.uuidString.prefix(8))")
+                candidateCard
 
-                            NavigationLink {
-                                ImportCandidateEditView(candidate: candidate)
-                            } label: {
-                                ImportCandidateRow(candidate: candidate)
-                            }
-                            .accessibilityIdentifier("import-candidate-nav-\(candidate.id.uuidString.prefix(8))")
-                        }
+                HStack(spacing: 12) {
+                    MZLightButton(title: "选择文件", systemImage: "doc.badge.plus") {
+                        isShowingFileImporter = true
                     }
-                }
-            }
+                    .accessibilityIdentifier("import-file-picker-btn")
 
-            if ProcessInfo.processInfo.arguments.contains("--uitesting") {
-                Section("测试工具") {
-                    Button {
+                    MZLightButton(title: "批量修改", systemImage: "slider.horizontal.3") {
+                        isShowingBatchEdit = true
+                    }
+                    .disabled(store.selectedImportCandidateIds.isEmpty)
+                    .accessibilityIdentifier("import-batch-edit-btn")
+                }
+
+                if ProcessInfo.processInfo.arguments.contains("--uitesting") {
+                    MZLightButton(title: "从剪贴板导入", systemImage: "doc.on.clipboard") {
                         if let csv = UIPasteboard.general.string {
                             _ = store.createImportBatch(source: source, fileName: "uitest-import.csv", contents: csv)
                         }
-                    } label: {
-                        Label("从剪贴板导入", systemImage: "doc.on.clipboard")
                     }
                     .accessibilityIdentifier("import-clipboard-btn")
                 }
-            }
-        }
-        .navigationTitle(source.displayName)
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button {
-                    isShowingFileImporter = true
-                } label: {
-                    Label("选择文件", systemImage: "doc.badge.plus")
-                }
-                .accessibilityIdentifier("import-file-picker-btn")
-                Button {
-                    isShowingBatchEdit = true
-                } label: {
-                    Label("批量整理", systemImage: "slider.horizontal.3")
-                }
-                .disabled(store.selectedImportCandidateIds.isEmpty)
-                .accessibilityIdentifier("import-batch-edit-btn")
-            }
-            ToolbarItemGroup(placement: .bottomBar) {
-                Button {
-                    selectAllPending()
-                } label: {
-                    Label("全选", systemImage: "checkmark.circle")
-                }
-                .disabled(pendingCandidates.isEmpty)
-                .accessibilityIdentifier("import-select-all-btn")
 
-                Button(role: .destructive) {
-                    _ = store.ignoreSelectedImportCandidates()
-                } label: {
-                    Label("忽略", systemImage: "eye.slash")
+                MZCard {
+                    HStack {
+                        Button("全选") {
+                            selectAllPending()
+                        }
+                        .foregroundStyle(MZTheme.accent)
+                        .disabled(pendingCandidates.isEmpty)
+                        .accessibilityIdentifier("import-select-all-btn")
+
+                        Spacer()
+
+                        Text("已选 \(store.selectedImportCandidateIds.count) 条")
+                            .foregroundStyle(MZTheme.ink)
+
+                        Spacer()
+
+                        Button("忽略", role: .destructive) {
+                            _ = store.ignoreSelectedImportCandidates()
+                        }
+                        .disabled(store.selectedImportCandidateIds.isEmpty)
+                        .accessibilityIdentifier("import-ignore-btn")
+                    }
                 }
-                .disabled(store.selectedImportCandidateIds.isEmpty)
-                .accessibilityIdentifier("import-ignore-btn")
 
-                Spacer()
-
-                Button {
+                MZPrimaryButton(title: "确认进入流水", isDisabled: store.selectedImportCandidateIds.isEmpty) {
                     if store.confirmSelectedImportCandidates() {
                         dismiss()
                     }
-                } label: {
-                    Label("确认进入流水", systemImage: "checkmark")
                 }
-                .disabled(store.selectedImportCandidateIds.isEmpty)
                 .accessibilityIdentifier("import-confirm-btn")
+
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle")
+                    Text("导入后作为流水记录，不单独调整余额")
+                }
+                .font(.footnote)
+                .foregroundStyle(MZTheme.secondaryInk)
+                .frame(maxWidth: .infinity)
             }
         }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
         .fileImporter(
             isPresented: $isShowingFileImporter,
             allowedContentTypes: importContentTypes,
@@ -555,6 +1531,57 @@ struct ImportCandidateListView: View {
                 store.prepareImport(source: source)
             }
         }
+    }
+
+    private var candidateCard: some View {
+        MZCard(padding: 0) {
+            if store.importCandidates.isEmpty {
+                MZEmptyState(title: "暂无候选", systemImage: "tray", subtitle: "选择文件或测试导入后会显示候选记录")
+                    .frame(maxWidth: .infinity)
+                    .padding(20)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(store.importCandidates.enumerated()), id: \.element.id) { index, candidate in
+                        HStack(spacing: 14) {
+                            Button {
+                                toggleSelection(candidate.id)
+                            } label: {
+                                Image(systemName: store.selectedImportCandidateIds.contains(candidate.id) ? "checkmark.circle.fill" : "circle")
+                                    .font(.title2)
+                                    .foregroundStyle(candidate.status == .pending ? MZTheme.accent : MZTheme.tertiaryInk)
+                                    .frame(width: 44, height: 44)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(candidate.status != .pending)
+                            .accessibilityIdentifier("import-candidate-checkbox-\(candidate.id.uuidString.prefix(8))")
+
+                            NavigationLink {
+                                ImportCandidateEditView(candidate: candidate)
+                            } label: {
+                                ImportCandidateRow(candidate: candidate)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("import-candidate-nav-\(candidate.id.uuidString.prefix(8))")
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+
+                        if index < store.importCandidates.count - 1 {
+                            MZDivider().padding(.horizontal, 16)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func statusPill(title: String, isSelected: Bool) -> some View {
+        Text(title)
+            .font(.headline.weight(.semibold))
+            .foregroundStyle(isSelected ? .white : MZTheme.secondaryInk)
+            .frame(maxWidth: .infinity)
+            .frame(height: 52)
+            .background(Capsule().fill(isSelected ? MZTheme.accent : MZTheme.page))
     }
 
     private var pendingCandidates: [ImportCandidateRecord] {
@@ -602,25 +1629,28 @@ struct ImportCandidateRow: View {
     let candidate: ImportCandidateRecord
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(candidate.accountMonth)
-                    .font(.headline)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(candidate.note ?? "候选记录")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(MZTheme.ink)
+                    .lineLimit(1)
                 Spacer()
-                Text(candidate.amount.mingZhangAmountText)
-                    .font(.headline)
+                Text(candidate.amount.moneyText)
+                    .font(.headline.weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(MZTheme.ink)
             }
-            Text(candidate.note ?? "无备注")
-                .foregroundStyle(.primary)
+
             Text("\(candidate.paymentMethodName ?? "未设置") / \(candidate.paymentTypeName ?? "未设置") / \(candidate.paymentDetailName ?? "未设置")")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.subheadline)
+                .foregroundStyle(MZTheme.secondaryInk)
                 .accessibilityIdentifier("import-candidate-classification-\(candidate.id.uuidString.prefix(8))")
-            Text("\(candidate.status.displayName) / 原始第 \(candidate.rawLineNumber) 行")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+
+            Text("\(candidate.accountMonth.displayMonth) · \(candidate.status.displayName) · 原始第 \(candidate.rawLineNumber) 行")
+                .font(.caption)
+                .foregroundStyle(MZTheme.tertiaryInk)
         }
-        .padding(.vertical, 4)
     }
 }
 
@@ -646,45 +1676,44 @@ struct ImportCandidateEditView: View {
     }
 
     var body: some View {
-        Form {
-            Section("候选") {
-                TextField("账月", text: $accountMonth)
-                    .textInputAutocapitalization(.never)
-                TextField("金额", text: $amountText)
-                    .keyboardType(.numbersAndPunctuation)
-                Picker("收付手段", selection: $paymentMethodName) {
-                    ForEach(paymentMethodOptions, id: \.self) { name in
-                        Text(name).tag(name)
+        VStack(spacing: 0) {
+            MZBackHeader(title: "整理候选")
+            MZPage {
+                MZCard {
+                    MZFieldRow(title: "账月", required: true) {
+                        TextField("账月", text: $accountMonth)
+                            .textInputAutocapitalization(.never)
+                    }
+                    MZDivider()
+                    MZFieldRow(title: "金额", required: true) {
+                        TextField("金额", text: $amountText)
+                            .keyboardType(.numbersAndPunctuation)
+                    }
+                    MZDivider()
+                    MZMenuRow(title: "收付手段", required: true, selection: $paymentMethodName, options: paymentMethodOptions)
+                    MZDivider()
+                    MZMenuRow(title: "收付类型", required: true, selection: $paymentTypeName, options: [""] + store.types.map(\.name))
+                        .accessibilityIdentifier("candidate-edit-type-picker")
+                    MZDivider()
+                    MZMenuRow(title: "类型明细", required: true, selection: $paymentDetailName, options: [""] + availableDetails.map(\.name))
+                        .accessibilityIdentifier("candidate-edit-detail-picker")
+                    MZDivider()
+                    MZFieldRow(title: "备注") {
+                        TextField("备注", text: $note, axis: .vertical)
                     }
                 }
-                Picker("收付类型", selection: $paymentTypeName) {
-                    Text("未选择").tag("")
-                    ForEach(store.types) { type in
-                        Text(type.name).tag(type.name)
-                    }
-                }
-                .accessibilityIdentifier("candidate-edit-type-picker")
-                Picker("类型明细", selection: $paymentDetailName) {
-                    Text("未选择").tag("")
-                    ForEach(availableDetails) { detail in
-                        Text(detail.name).tag(detail.name)
-                    }
-                }
-                .accessibilityIdentifier("candidate-edit-detail-picker")
-                TextField("备注", text: $note, axis: .vertical)
-            }
 
-            Section("原始") {
-                LabeledContent("行号", value: "\(candidate.rawLineNumber)")
-                if let transactionId = candidate.rawTransactionId {
-                    LabeledContent("交易号", value: transactionId)
+                MZCard {
+                    Text("原始信息")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                    SummaryLine(title: "行号", value: "\(candidate.rawLineNumber)")
+                    if let transactionId = candidate.rawTransactionId {
+                        SummaryLine(title: "交易号", value: transactionId)
+                    }
                 }
-            }
-        }
-        .navigationTitle("整理候选")
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("保存") {
+
+                MZPrimaryButton(title: "保存", isDisabled: candidate.status != .pending) {
                     do {
                         if store.updateImportCandidate(id: candidate.id, changes: try makeChanges()) {
                             dismiss()
@@ -693,10 +1722,11 @@ struct ImportCandidateEditView: View {
                         store.lastError = error.localizedDescription
                     }
                 }
-                .disabled(candidate.status != .pending)
                 .accessibilityIdentifier("candidate-edit-save-btn")
             }
         }
+        .navigationBarBackButtonHidden(true)
+        .background(MZTheme.page)
         .onChange(of: paymentTypeName) {
             if !availableDetails.contains(where: { $0.name == paymentDetailName }) {
                 paymentDetailName = ""
@@ -746,45 +1776,31 @@ struct ImportBatchEditView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("批量整理") {
-                    TextField("账月", text: $accountMonth)
-                        .textInputAutocapitalization(.never)
-                    Picker("收付手段", selection: $paymentMethodName) {
-                        Text("不修改").tag("")
-                        ForEach(store.methods) { method in
-                            Text(method.name).tag(method.name)
+            VStack(spacing: 0) {
+                MZBackHeader(title: "批量修改")
+                MZPage {
+                    MZCard {
+                        MZFieldRow(title: "账月") {
+                            TextField("不修改", text: $accountMonth)
+                                .textInputAutocapitalization(.never)
                         }
+                        MZDivider()
+                        MZMenuRow(title: "收付手段", selection: $paymentMethodName, options: [""] + store.methods.map(\.name))
+                        MZDivider()
+                        MZMenuRow(title: "收付类型", selection: $paymentTypeName, options: [""] + store.types.map(\.name))
+                        MZDivider()
+                        MZMenuRow(title: "类型明细", selection: $paymentDetailName, options: [""] + availableDetails.map(\.name))
                     }
-                    Picker("收付类型", selection: $paymentTypeName) {
-                        Text("不修改").tag("")
-                        ForEach(store.types) { type in
-                            Text(type.name).tag(type.name)
-                        }
-                    }
-                    Picker("类型明细", selection: $paymentDetailName) {
-                        Text("不修改").tag("")
-                        ForEach(availableDetails) { detail in
-                            Text(detail.name).tag(detail.name)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("批量整理")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") {
-                        dismiss()
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("应用") {
+
+                    MZPrimaryButton(title: "应用修改") {
                         if store.batchUpdateImportCandidates(ids: selectedIds, changes: changes) {
                             dismiss()
                         }
                     }
                 }
             }
+            .navigationBarBackButtonHidden(true)
+            .background(MZTheme.page)
             .onChange(of: paymentTypeName) {
                 if !availableDetails.contains(where: { $0.name == paymentDetailName }) {
                     paymentDetailName = ""
@@ -833,69 +1849,86 @@ struct JournalFormView: View {
     }
 
     var body: some View {
-        Form {
-            Section("账目") {
-                TextField("账月", text: $input.accountMonth)
-                    .textInputAutocapitalization(.never)
-                    .accessibilityIdentifier("field_account_month")
-                DatePicker("时间", selection: $input.occurredAt)
-                    .accessibilityIdentifier("picker_occurred_at")
-                Picker("收付手段", selection: $input.paymentMethodName) {
-                    ForEach(store.methods) { method in
-                        Text(method.name).tag(method.name)
+        VStack(spacing: 0) {
+            MZBackHeader(title: modeTitle)
+            MZPage {
+                MZCard {
+                    MZFieldRow(title: "账月", required: true) {
+                        TextField("账月", text: $input.accountMonth)
+                            .textInputAutocapitalization(.never)
+                            .foregroundStyle(MZTheme.accent)
+                            .accessibilityIdentifier("field_account_month")
                     }
+                    MZDivider()
+                    MZFieldRow(title: "时间", required: true) {
+                        DatePicker("", selection: $input.occurredAt, displayedComponents: [.date, .hourAndMinute])
+                            .labelsHidden()
+                            .accessibilityIdentifier("picker_occurred_at")
+                    }
+                    MZDivider()
+                    MZMenuRow(title: "收付手段", required: true, selection: $input.paymentMethodName, options: store.methods.map(\.name))
+                        .accessibilityIdentifier("picker_payment_method")
+                    MZDivider()
+                    MZFieldRow(title: "金额", required: true) {
+                        TextField("金额", text: $input.amountText)
+                            .keyboardType(.decimalPad)
+                            .accessibilityIdentifier("field_amount")
+                    }
+                    MZDivider()
+                    MZMenuRow(title: "收付类型", required: true, selection: $input.paymentTypeName, options: store.types.map(\.name))
+                        .accessibilityIdentifier("picker_payment_type")
+                    MZDivider()
+                    MZMenuRow(title: "类型明细", required: true, selection: $input.paymentDetailName, options: availableDetails.map(\.name))
+                        .accessibilityIdentifier("picker_payment_detail")
                 }
-                .accessibilityIdentifier("picker_payment_method")
-                TextField("金额", text: $input.amountText)
-                    .keyboardType(.decimalPad)
-                    .accessibilityIdentifier("field_amount")
-                    Picker("收付类型", selection: $input.paymentTypeName) {
-                        ForEach(store.types) { type in
-                            Text(type.name).tag(type.name)
-                        }
-                    }
-                    .accessibilityIdentifier("picker_payment_type")
-                    Picker("类型明细", selection: $input.paymentDetailName) {
-                        ForEach(availableDetails) { detail in
-                            Text(detail.name).tag(detail.name)
-                        }
-                    }
-                    .accessibilityIdentifier("picker_payment_detail")
-                TextField("备注", text: $input.note, axis: .vertical)
-                    .accessibilityIdentifier("field_note")
-            }
 
-            if case .edit(let record) = mode, record.recordSource == .import {
-                ImportTraceSection(record: record)
-            }
-
-            if case .edit = mode, isEditableRecord {
-                Section {
-                    Button("删除记录", role: .destructive) {
-                        isShowingDeleteConfirmation = true
+                MZCard {
+                    Text("备注")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(MZTheme.ink)
+                    TextField("备注", text: $input.note, axis: .vertical)
+                        .lineLimit(3...5)
+                        .accessibilityIdentifier("field_note")
+                    HStack {
+                        Spacer()
+                        Text("\(input.note.count)/100")
+                            .font(.caption)
+                            .foregroundStyle(MZTheme.tertiaryInk)
                     }
-                    .accessibilityIdentifier("btn_delete_record")
                 }
-            }
-        }
-        .navigationTitle(modeTitle)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("取消") {
-                    dismiss()
+
+                if case .edit(let record) = mode, record.recordSource == .import {
+                    ImportTraceSection(record: record)
                 }
-                .accessibilityIdentifier("btn_cancel")
-            }
-            ToolbarItem(placement: .confirmationAction) {
-                Button("保存") {
+
+                MZCard {
+                    SummaryLine(title: "来源", value: sourceText)
+                    MZDivider()
+                    SummaryLine(title: "性质", value: kindText)
+                    MZDivider()
+                    SummaryLine(title: "编辑边界", value: isEditableRecord ? "可直接编辑和删除" : "应回到来源修改")
+                }
+
+                MZPrimaryButton(title: "保存记录", isDisabled: !isEditableRecord) {
                     if save() {
                         dismiss()
                     }
                 }
-                .disabled(!isEditableRecord)
                 .accessibilityIdentifier("btn_save")
+
+                if case .edit = mode, isEditableRecord {
+                    Button("删除记录", role: .destructive) {
+                        isShowingDeleteConfirmation = true
+                    }
+                    .font(.headline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .accessibilityIdentifier("btn_delete_record")
+                }
             }
         }
+        .navigationBarBackButtonHidden(true)
+        .background(MZTheme.page)
         .confirmationDialog("确认删除记录？", isPresented: $isShowingDeleteConfirmation, titleVisibility: .visible) {
             Button("删除记录", role: .destructive) {
                 if case .edit(let record) = mode, store.deleteRecord(id: record.id) {
@@ -923,12 +1956,30 @@ struct JournalFormView: View {
         }
     }
 
+    private var sourceText: String {
+        switch mode {
+        case .create:
+            "手工记录"
+        case .edit(let record):
+            record.recordSource.longDisplayName
+        }
+    }
+
+    private var kindText: String {
+        switch mode {
+        case .create:
+            "普通记录"
+        case .edit(let record):
+            record.recordKind == .carryForward ? "固定 / 继承记录" : "普通记录"
+        }
+    }
+
     private var isEditableRecord: Bool {
         switch mode {
         case .create:
-            return true
+            true
         case .edit(let record):
-            return record.recordSource == .manual || record.recordSource == .import
+            record.isDirectlyEditable
         }
     }
 
@@ -949,6 +2000,7 @@ struct JournalFormView: View {
     }
 
     private func normalizeDetailSelection() {
+        guard !availableDetails.isEmpty else { return }
         guard !availableDetails.contains(where: { $0.name == input.paymentDetailName }) else { return }
         input.paymentDetailName = availableDetails.first?.name ?? ""
     }
@@ -960,16 +2012,22 @@ struct ImportTraceSection: View {
     @State private var trace: ImportTrace?
 
     var body: some View {
-        Section("导入来源") {
+        MZCard {
+            Text("导入来源")
+                .font(.headline.weight(.bold))
+                .foregroundStyle(MZTheme.ink)
             if let trace {
-                LabeledContent("来源", value: trace.batch.source.displayName)
-                LabeledContent("文件", value: trace.batch.fileName ?? "未命名")
-                LabeledContent("原始行号", value: "\(trace.candidate.rawLineNumber)")
+                SummaryLine(title: "来源", value: trace.batch.source.displayName)
+                MZDivider()
+                SummaryLine(title: "文件", value: trace.batch.fileName ?? "未命名")
+                MZDivider()
+                SummaryLine(title: "原始行号", value: "\(trace.candidate.rawLineNumber)")
                 if let transactionId = trace.candidate.rawTransactionId {
-                    LabeledContent("交易号", value: transactionId)
+                    MZDivider()
+                    SummaryLine(title: "交易号", value: transactionId)
                 }
             } else {
-                ContentUnavailableView("暂无来源", systemImage: "tray")
+                MZEmptyState(title: "暂无来源", systemImage: "tray")
             }
         }
         .onAppear {
@@ -978,77 +2036,186 @@ struct ImportTraceSection: View {
     }
 }
 
+struct ReadOnlyRecordDetailView: View {
+    let record: JournalRecord
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: "记录详情")
+            MZPage {
+                MZCard {
+                    SummaryLine(title: "账月", value: record.accountMonth.displayMonth)
+                    MZDivider()
+                    SummaryLine(title: "时间", value: record.occurredAt.fullText)
+                    MZDivider()
+                    SummaryLine(title: "收付手段", value: record.paymentMethodName)
+                    MZDivider()
+                    SummaryLine(title: "金额", value: record.amount.moneyText)
+                    MZDivider()
+                    SummaryLine(title: "收付类型", value: record.paymentTypeName)
+                    MZDivider()
+                    SummaryLine(title: "类型明细", value: record.paymentDetailName)
+                }
+
+                MZCard {
+                    Text("备注")
+                        .font(.headline.weight(.semibold))
+                    Text(record.note ?? "无备注")
+                        .foregroundStyle(MZTheme.secondaryInk)
+                }
+
+                MZCard {
+                    SummaryLine(title: "来源", value: record.recordSource.longDisplayName)
+                    MZDivider()
+                    SummaryLine(title: "性质", value: record.recordKind == .carryForward ? "固定 / 继承记录" : "普通记录")
+                    MZDivider()
+                    SummaryLine(title: "编辑边界", value: "请回到来源记录、规则或投资明细修改")
+                }
+
+                MZPrimaryButton(title: "查看来源", isDisabled: true) {}
+            }
+        }
+        .navigationBarBackButtonHidden(true)
+        .background(MZTheme.page)
+    }
+}
+
+// MARK: - 资产负债
+
 struct BalanceView: View {
     @EnvironmentObject private var store: LedgerStore
     @State private var isShowingMonthPicker = false
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("资产") {
-                    if store.balanceSummary.cashSourceRecordIds.isEmpty {
-                        SummaryRow(title: "现金类资产", value: store.balanceSummary.cashBalance)
-                    } else {
-                        NavigationLink {
-                            AssetDetailView(
-                                title: "现金类资产",
-                                amount: store.balanceSummary.cashBalance,
-                                sourceRecordIds: store.balanceSummary.cashSourceRecordIds
-                            )
-                        } label: {
-                            SummaryRow(title: "现金类资产", value: store.balanceSummary.cashBalance)
-                        }
-                    }
+            MZPage(bottomInset: 112) {
+                MZTopBar(
+                    monthTitle: store.accountMonth.displayMonth,
+                    onMonthTap: { isShowingMonthPicker = true }
+                )
 
-                    if store.investmentHoldings.isEmpty {
-                        SummaryRow(title: "基金投资资产", value: 0)
-                            .accessibilityIdentifier("investment_asset_entry")
-                    } else {
-                        NavigationLink {
-                            InvestmentFundListView()
-                        } label: {
-                            SummaryRow(
-                                title: "基金投资资产",
-                                value: store.balanceSummary.investmentItems.reduce(Decimal(0)) { $0 + $1.amount }
-                            )
-                        }
-                        .accessibilityIdentifier("investment_asset_entry")
-                    }
+                MZCard {
+                    MZMetricTriplet(items: [
+                        ("资产合计", assetTotal),
+                        ("负债合计", liabilityTotal),
+                        ("净资产", assetTotal - liabilityTotal)
+                    ])
+                    Text("资产合计按成本口径，不含未实现盈亏")
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                        .frame(maxWidth: .infinity, alignment: .center)
                 }
 
-                Section("负债") {
+                MZCard {
+                    sectionHeader(title: "资产（成本口径）", amount: store.balanceSummary.cashBalance)
+                    NavigationLink {
+                        AssetDetailView(
+                            title: "现金类资产",
+                            amount: store.balanceSummary.cashBalance,
+                            sourceRecordIds: store.balanceSummary.cashSourceRecordIds
+                        )
+                    } label: {
+                        listAmountRow(title: "现金", amount: store.balanceSummary.cashBalance)
+                    }
+                    MZDivider()
+                    listAmountRow(title: "电子钱包余额", amount: store.balanceSummary.cashBalance, showChevron: false)
+                    MZDivider()
+                    listAmountRow(title: "长期待摊费用", amount: 0, showChevron: false)
+                }
+
+                MZCard {
+                    sectionHeader(title: "负债（剩余负债）", amount: liabilityTotal)
                     if store.balanceSummary.liabilityItems.isEmpty {
-                        ContentUnavailableView("暂无负债", systemImage: "creditcard")
+                        MZEmptyState(title: "暂无负债", systemImage: "creditcard")
+                            .frame(maxWidth: .infinity)
                     } else {
-                        ForEach(store.balanceSummary.liabilityItems, id: \.name) { item in
-                            if item.sourceRecordIds.isEmpty {
-                                BalanceItemRow(item: item)
-                            } else {
-                                NavigationLink {
-                                    LiabilityDetailView(item: item)
-                                } label: {
-                                    BalanceItemRow(item: item)
-                                }
+                        ForEach(Array(store.balanceSummary.liabilityItems.enumerated()), id: \.element.name) { index, item in
+                            NavigationLink {
+                                LiabilityDetailView(item: item)
+                            } label: {
+                                listAmountRow(title: item.name, amount: item.amount)
+                            }
+                            .buttonStyle(.plain)
+                            if index < store.balanceSummary.liabilityItems.count - 1 {
+                                MZDivider()
                             }
                         }
                     }
                 }
-            }
-            .navigationTitle("资产负债")
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Button {
-                        isShowingMonthPicker = true
+
+                MZCard {
+                    sectionHeader(title: "投资（成本口径）", amount: investmentBookValue)
+                    NavigationLink {
+                        InvestmentFundListView()
                     } label: {
-                        Label(store.accountMonth, systemImage: "calendar")
-                            .labelStyle(.titleAndIcon)
+                        listAmountRow(title: "基金投资成本", amount: investmentBookValue)
                     }
+                    .accessibilityIdentifier("investment_asset_entry")
+                    MZDivider()
+                    listAmountRow(title: "PV（市值）", amount: investmentPresentValue, showChevron: false)
+                    MZDivider()
+                    listAmountRow(title: "未实现盈亏", amount: investmentUnrealizedGain, showChevron: false)
                 }
             }
             .sheet(isPresented: $isShowingMonthPicker) {
                 MonthPickerView()
             }
+            .toolbar(.hidden, for: .navigationBar)
         }
+    }
+
+    private var assetTotal: Decimal {
+        store.balanceSummary.cashBalance + investmentBookValue
+    }
+
+    private var liabilityTotal: Decimal {
+        store.balanceSummary.liabilityItems.reduce(Decimal.zero) { $0 + $1.amount }
+    }
+
+    private var investmentBookValue: Decimal {
+        store.balanceSummary.investmentItems.reduce(Decimal.zero) { $0 + $1.amount }
+    }
+
+    private var investmentPresentValue: Decimal {
+        store.investmentHoldings.reduce(Decimal.zero) { $0 + ($1.presentValue ?? $1.bookValue) }
+    }
+
+    private var investmentUnrealizedGain: Decimal {
+        store.investmentHoldings.reduce(Decimal.zero) { $0 + ($1.unrealizedGain ?? 0) }
+    }
+
+    private func sectionHeader(title: String, amount: Decimal) -> some View {
+        HStack {
+            Text(title)
+                .font(.title3.weight(.bold))
+                .foregroundStyle(MZTheme.ink)
+            Spacer()
+            Text(amount.moneyText)
+                .font(.headline.weight(.bold))
+                .monospacedDigit()
+                .foregroundStyle(MZTheme.accent)
+            Image(systemName: "chevron.right")
+                .foregroundStyle(MZTheme.accent)
+        }
+    }
+
+    private func listAmountRow(title: String, amount: Decimal, showChevron: Bool = true) -> some View {
+        HStack {
+            Text(title)
+                .font(.body)
+                .foregroundStyle(MZTheme.ink)
+            Spacer()
+            Text(amount.moneyText)
+                .font(.body.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(MZTheme.ink)
+            if showChevron {
+                Image(systemName: "chevron.right")
+                    .foregroundStyle(MZTheme.secondaryInk)
+            }
+        }
+        .frame(minHeight: 46)
+        .contentShape(Rectangle())
     }
 }
 
@@ -1059,28 +2226,94 @@ struct AssetDetailView: View {
     let sourceRecordIds: [UUID]
 
     var body: some View {
-        List {
-            Section("余额") {
-                SummaryRow(title: title, value: amount)
-            }
+        VStack(spacing: 0) {
+            MZBackHeader(title: title)
+            MZPage {
+                MZCard {
+                    Text(amount.moneyText)
+                        .font(.largeTitle.weight(.bold))
+                        .monospacedDigit()
+                        .foregroundStyle(MZTheme.ink)
+                    Text("当前余额")
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                }
 
-            Section("来源") {
-                if sourceRecordIds.isEmpty {
-                    ContentUnavailableView("暂无来源流水", systemImage: "tray")
-                } else {
+                MZCard {
+                    SummaryLine(title: "本范围增加", value: "0.00")
+                    MZDivider()
+                    SummaryLine(title: "本范围减少", value: "0.00")
+                }
+
+                MZCard {
                     NavigationLink {
                         SourceRecordsView(
                             title: "\(title) 来源",
-                            filterDescription: "\(store.accountMonth) / \(title)",
+                            filterDescription: "\(store.accountMonth.displayMonth) / \(title)",
                             recordIds: sourceRecordIds
                         )
                     } label: {
-                        Text("来源流水 \(sourceRecordIds.count) 条")
+                        MZIconRow(title: "相关流水", subtitle: "查看构成当前余额的来源记录", systemImage: "list.bullet.rectangle", trailing: "\(sourceRecordIds.count) 条")
+                    }
+                    MZDivider()
+                    NavigationLink {
+                        AdjustBalanceView(title: title, currentAmount: amount)
+                    } label: {
+                        MZIconRow(title: "调整余额", subtitle: "通过生成流水调整记录修正余额", systemImage: "pencil.line")
                     }
                 }
             }
         }
-        .navigationTitle(title)
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+    }
+}
+
+struct AdjustBalanceView: View {
+    let title: String
+    let currentAmount: Decimal
+    @State private var targetAmountText = ""
+    @State private var note = "资产余额调整"
+
+    private var difference: Decimal {
+        guard let target = Decimal(string: targetAmountText, locale: Locale(identifier: "en_US_POSIX")) else {
+            return 0
+        }
+        return target - currentAmount
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: "调整余额")
+            MZPage {
+                MZCard {
+                    SummaryLine(title: "账户", value: title)
+                    MZDivider()
+                    SummaryLine(title: "当前余额", value: currentAmount.moneyText)
+                    MZDivider()
+                    MZFieldRow(title: "目标余额") {
+                        TextField("输入目标余额", text: $targetAmountText)
+                            .keyboardType(.decimalPad)
+                    }
+                    MZDivider()
+                    SummaryLine(title: "差额", value: difference.moneyText)
+                    MZDivider()
+                    MZFieldRow(title: "备注") {
+                        TextField("备注", text: $note)
+                    }
+                }
+
+                MZPrimaryButton(title: "生成调整记录", isDisabled: true) {}
+
+                MZCard {
+                    Text("当前仅完成 v5.1 调整余额页面结构。真实调整需要接入资产调整 Use Case 后启用。")
+                        .font(.footnote)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                }
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
     }
 }
 
@@ -1089,138 +2322,101 @@ struct LiabilityDetailView: View {
     let item: BalanceItem
 
     var body: some View {
-        List {
-            Section("余额") {
-                SummaryRow(title: "剩余负债", value: item.amount)
-            }
-
-            Section("来源") {
-                NavigationLink {
-                    SourceRecordsView(
-                        title: "\(item.name) 来源",
-                        filterDescription: "\(store.accountMonth) / \(item.name)",
-                        recordIds: item.sourceRecordIds
-                    )
-                } label: {
-                    Text("来源流水 \(item.sourceRecordIds.count) 条")
+        VStack(spacing: 0) {
+            MZBackHeader(title: item.name)
+            MZPage {
+                MZCard {
+                    Text(item.amount.moneyText)
+                        .font(.largeTitle.weight(.bold))
+                        .monospacedDigit()
+                        .foregroundStyle(MZTheme.ink)
+                    Text("剩余负债")
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
                 }
-            }
-        }
-        .navigationTitle(item.name)
-    }
-}
 
-struct BalanceItemRow: View {
-    let item: BalanceItem
+                MZCard {
+                    SummaryLine(title: "本月新增", value: item.amount.moneyText)
+                    MZDivider()
+                    SummaryLine(title: "已还款", value: "0.00")
+                    MZDivider()
+                    SummaryLine(title: "利息成本", value: "0.00")
+                }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            SummaryRow(title: item.name, value: item.amount)
-            Text("来源流水 \(item.sourceRecordIds.count) 条")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
-struct SourceRecordsView: View {
-    @EnvironmentObject private var store: LedgerStore
-    let title: String
-    let filterDescription: String
-    let recordIds: [UUID]
-    @State private var records: [JournalRecord] = []
-    @State private var selectedRecordId: UUID?
-
-    var body: some View {
-        List {
-            Section("筛选") {
-                Text(filterDescription)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("来源记录") {
-                if records.isEmpty {
-                    ContentUnavailableView("暂无来源流水", systemImage: "tray")
-                } else {
-                    ForEach(records) { record in
-                        Button {
-                            selectedRecordId = record.id
-                        } label: {
-                            HStack(spacing: 12) {
-                                JournalRecordRow(record: record)
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.footnote.weight(.semibold))
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                        .buttonStyle(.plain)
+                MZCard {
+                    NavigationLink {
+                        SourceRecordsView(
+                            title: "\(item.name) 来源",
+                            filterDescription: "\(store.accountMonth.displayMonth) / \(item.name)",
+                            recordIds: item.sourceRecordIds
+                        )
+                    } label: {
+                        MZIconRow(title: "相关流水", subtitle: "查看负债形成与变化来源", systemImage: "list.bullet.rectangle", trailing: "\(item.sourceRecordIds.count) 条")
                     }
+                    MZDivider()
+                    MZIconRow(title: "记还款", subtitle: "生成负债类减记流水，后续接入", systemImage: "checkmark.circle", tint: MZTheme.tertiaryInk)
+                    MZDivider()
+                    MZIconRow(title: "补利息", subtitle: "生成财务费用开支流水，后续接入", systemImage: "plus.circle", tint: MZTheme.tertiaryInk)
                 }
             }
         }
-        .navigationTitle(title)
-        .navigationDestination(item: $selectedRecordId) { recordId in
-            if let record = records.first(where: { $0.id == recordId }) {
-                JournalFormView(mode: .edit(record))
-            } else {
-                ContentUnavailableView("找不到来源流水", systemImage: "tray")
-            }
-        }
-        .onAppear(perform: loadRecords)
-    }
-
-    private func loadRecords() {
-        do {
-            records = try store.querySourceRecords(recordIds: recordIds)
-        } catch {
-            store.lastError = error.localizedDescription
-        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
     }
 }
 
 struct InvestmentFundListView: View {
     @EnvironmentObject private var store: LedgerStore
-    @State private var selectedFundName: String?
 
     var body: some View {
-        List {
-            Section("基金标的") {
-                ForEach(store.investmentHoldings) { holding in
-                    Button {
-                        selectedFundName = holding.fundName
-                    } label: {
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                SummaryRow(title: holding.fundName, value: holding.bookValue)
-                                Text("份额 \(holding.holdingShare.mingZhangAmountText)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            MZBackHeader(title: "基金投资")
+            MZPage {
+                MZCard(padding: 0) {
+                    if store.investmentHoldings.isEmpty {
+                        MZEmptyState(title: "暂无基金标的", systemImage: "briefcase")
+                            .frame(maxWidth: .infinity)
+                            .padding(20)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(Array(store.investmentHoldings.enumerated()), id: \.element.id) { index, holding in
+                                NavigationLink {
+                                    InvestmentLedgerView(fundName: holding.fundName)
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(holding.fundName)
+                                                .font(.body.weight(.semibold))
+                                                .foregroundStyle(MZTheme.ink)
+                                            Text("份额 \(holding.holdingShare.moneyText)")
+                                                .font(.caption)
+                                                .foregroundStyle(MZTheme.secondaryInk)
+                                        }
+                                        Spacer()
+                                        Text(holding.bookValue.moneyText)
+                                            .font(.body.weight(.semibold))
+                                            .monospacedDigit()
+                                            .foregroundStyle(MZTheme.ink)
+                                        Image(systemName: "chevron.right")
+                                            .foregroundStyle(MZTheme.secondaryInk)
+                                    }
+                                    .padding(.horizontal, 16)
+                                    .frame(minHeight: 56)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("investment_fund_row_\(holding.fundName)")
+                                if index < store.investmentHoldings.count - 1 {
+                                    MZDivider().padding(.horizontal, 16)
+                                }
                             }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(.tertiary)
                         }
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("investment_fund_row_\(holding.fundName)")
                 }
             }
         }
-        .navigationTitle("基金投资")
-        .navigationDestination(isPresented: Binding(
-            get: { selectedFundName != nil },
-            set: { isPresented in
-                if !isPresented {
-                    selectedFundName = nil
-                }
-            }
-        )) {
-            if let selectedFundName {
-                InvestmentLedgerView(fundName: selectedFundName)
-            }
-        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
     }
 }
 
@@ -1230,69 +2426,64 @@ struct InvestmentLedgerView: View {
     @State private var transactions: [InvestmentTransaction] = []
     @State private var summary: InvestmentMonthlySummary?
     @State private var feedRecords: [JournalRecord] = []
-    @State private var isShowingCreateForm = false
 
     var body: some View {
-        List {
-            Section("标的") {
-                Text(fundName)
-                    .accessibilityIdentifier("investment_ledger_fund_name")
-            }
+        VStack(spacing: 0) {
+            MZBackHeader(title: fundName)
+            MZPage {
+                MZCard {
+                    MZMetricTriplet(items: [
+                        ("成本", holding?.bookValue ?? 0),
+                        ("份额", holding?.holdingShare ?? 0),
+                        ("PV", holding?.presentValue ?? holding?.bookValue ?? 0)
+                    ])
+                    Text(fundName)
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                        .accessibilityIdentifier("investment_ledger_fund_name")
+                }
 
-            if let holding {
-                Section("持仓") {
-                    SummaryRow(title: "账面价值", value: holding.bookValue)
-                    SummaryRow(title: "持有份额", value: holding.holdingShare)
-                    if let presentValue = holding.presentValue {
-                        SummaryRow(title: "当前市值", value: presentValue)
-                    }
-                    if let unrealizedGain = holding.unrealizedGain {
-                        SummaryRow(title: "未实现结果", value: unrealizedGain)
+                if let summary {
+                    MZCard {
+                        Text("\(store.accountMonth.displayMonth) 结果")
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(MZTheme.ink)
+                        SummaryLine(title: "买入入账", value: summary.buyBookAmount.moneyText)
+                        MZDivider()
+                        SummaryLine(title: "卖出入账", value: summary.sellBookAmount.moneyText)
+                        MZDivider()
+                        SummaryLine(title: "已实现收益", value: summary.realizedGain.moneyText)
+                        MZDivider()
+                        SummaryLine(title: "已实现亏损", value: summary.realizedLoss.moneyText)
                     }
                 }
-            }
 
-            if let summary {
-                Section("\(store.accountMonth) 结果") {
-                    SummaryRow(title: "买入入账", value: summary.buyBookAmount)
-                    SummaryRow(title: "卖出入账", value: summary.sellBookAmount)
-                    SummaryRow(title: "已实现收益", value: summary.realizedGain)
-                    SummaryRow(title: "已实现亏损", value: summary.realizedLoss)
-                }
-            }
+                InvestmentFeedRecordsSection(records: feedRecords)
 
-            InvestmentFeedRecordsSection(records: feedRecords)
-
-            Section("交易") {
-                if transactions.isEmpty {
-                    ContentUnavailableView("暂无交易", systemImage: "tray")
-                } else {
-                    ForEach(transactions) { transaction in
-                        NavigationLink {
-                            InvestmentTransactionFormView(mode: .edit(transaction))
-                        } label: {
-                            InvestmentTransactionRow(transaction: transaction)
+                MZCard(padding: 0) {
+                    if transactions.isEmpty {
+                        MZEmptyState(title: "暂无交易", systemImage: "tray")
+                            .frame(maxWidth: .infinity)
+                            .padding(20)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(Array(transactions.enumerated()), id: \.element.id) { index, transaction in
+                                InvestmentTransactionRow(transaction: transaction)
+                                    .padding(.horizontal, 16)
+                                if index < transactions.count - 1 {
+                                    MZDivider().padding(.horizontal, 16)
+                                }
+                            }
                         }
                     }
                 }
-            }
-        }
-        .navigationTitle(fundName)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    isShowingCreateForm = true
-                } label: {
-                    Label("新增交易", systemImage: "plus")
-                }
+
+                MZPrimaryButton(title: "新增交易", isDisabled: true) {}
                 .accessibilityIdentifier("investment_add_transaction_button")
             }
         }
-        .sheet(isPresented: $isShowingCreateForm, onDismiss: loadData) {
-            NavigationStack {
-                InvestmentTransactionFormView(mode: .create(fundName: fundName))
-            }
-        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
         .onAppear(perform: loadData)
         .onChange(of: store.investmentHoldings.map(\.id)) {
             loadData()
@@ -1317,17 +2508,30 @@ struct InvestmentFeedRecordsSection: View {
     let records: [JournalRecord]
 
     var body: some View {
-        Section("回填流水") {
+        MZCard(padding: 0) {
             if records.isEmpty {
-                ContentUnavailableView("暂无回填", systemImage: "tray")
+                MZEmptyState(title: "暂无回填流水", systemImage: "tray")
+                    .frame(maxWidth: .infinity)
+                    .padding(20)
             } else {
-                ForEach(records) { record in
-                    NavigationLink {
-                        JournalFormView(mode: .edit(record))
-                    } label: {
-                        JournalRecordRow(record: record)
+                VStack(spacing: 0) {
+                    ForEach(Array(records.enumerated()), id: \.element.id) { index, record in
+                        NavigationLink {
+                            if record.isDirectlyEditable {
+                                JournalFormView(mode: .edit(record))
+                            } else {
+                                ReadOnlyRecordDetailView(record: record)
+                            }
+                        } label: {
+                            MZRecordRow(record: record)
+                                .padding(.horizontal, 16)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("investment_feed_row_\(record.paymentDetailName)")
+                        if index < records.count - 1 {
+                            MZDivider().padding(.horizontal, 16)
+                        }
                     }
-                    .accessibilityIdentifier("investment_feed_row_\(record.paymentDetailName)")
                 }
             }
         }
@@ -1338,131 +2542,92 @@ struct InvestmentTransactionRow: View {
     let transaction: InvestmentTransaction
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(transaction.transactionType.displayName)
-                    .font(.headline)
-                Spacer()
-                Text((transaction.tradeAmount ?? transaction.nav ?? 0).mingZhangAmountText)
-                    .font(.headline)
-            }
-            Text("\(transaction.accountMonth) / 份额 \((transaction.tradeShare ?? transaction.holdingShare).mingZhangAmountText)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if let bookAmount = transaction.bookAmount {
-                Text("入账 \(bookAmount.mingZhangAmountText)")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(MZTheme.ink)
+                Text("\(transaction.accountMonth) / 份额 \((transaction.tradeShare ?? transaction.holdingShare).moneyText)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MZTheme.secondaryInk)
             }
-            if let note = transaction.note, !note.isEmpty {
-                Text(note)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Spacer()
+            Text((transaction.tradeAmount ?? transaction.nav ?? 0).moneyText)
+                .font(.body.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(MZTheme.ink)
         }
-        .padding(.vertical, 4)
+        .frame(minHeight: 56)
+        .contentShape(Rectangle())
     }
 }
 
-struct InvestmentTransactionFormView: View {
-    enum Mode: Equatable {
-        case create(fundName: String)
-        case edit(InvestmentTransaction)
-    }
-
+struct SourceRecordsView: View {
     @EnvironmentObject private var store: LedgerStore
-    @Environment(\.dismiss) private var dismiss
-    let mode: Mode
-    @State private var input: InvestmentFormInput
-    @State private var isShowingDeleteConfirmation = false
-
-    init(mode: Mode) {
-        self.mode = mode
-        switch mode {
-        case .create(let fundName):
-            _input = State(initialValue: InvestmentFormInput(fundName: fundName))
-        case .edit(let transaction):
-            _input = State(initialValue: .from(transaction: transaction))
-        }
-    }
+    let title: String
+    let filterDescription: String
+    let recordIds: [UUID]
+    @State private var records: [JournalRecord] = []
 
     var body: some View {
-        Form {
-            Section("交易") {
-                TextField("账月", text: $input.accountMonth)
-                    .textInputAutocapitalization(.never)
-                TextField("日期", text: $input.occurredDateText)
-                    .textInputAutocapitalization(.never)
-                TextField("标的名称", text: $input.fundName)
-                Picker("交易类别", selection: $input.transactionType) {
-                    ForEach(InvestmentTransactionType.allCases, id: \.self) { type in
-                        Text(type.displayName).tag(type)
-                    }
+        VStack(spacing: 0) {
+            MZBackHeader(title: title)
+            MZPage {
+                MZCard {
+                    Text("来源筛选")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                    Text(filterDescription)
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                    Button("清除筛选") {}
+                        .foregroundStyle(MZTheme.accent)
+                        .disabled(true)
                 }
-                .pickerStyle(.segmented)
-                TextField("交易金额", text: $input.tradeAmountText)
-                    .keyboardType(.numbersAndPunctuation)
-                TextField("交易份额", text: $input.tradeShareText)
-                    .keyboardType(.numbersAndPunctuation)
-                TextField("单位净值", text: $input.navText)
-                    .keyboardType(.numbersAndPunctuation)
-                TextField("备注", text: $input.note, axis: .vertical)
-            }
 
-            if case .edit = mode {
-                Section {
-                    Button("删除交易", role: .destructive) {
-                        isShowingDeleteConfirmation = true
+                MZCard(padding: 0) {
+                    if records.isEmpty {
+                        MZEmptyState(title: "暂无来源流水", systemImage: "tray")
+                            .frame(maxWidth: .infinity)
+                            .padding(20)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(Array(records.enumerated()), id: \.element.id) { index, record in
+                                NavigationLink {
+                                    if record.isDirectlyEditable {
+                                        JournalFormView(mode: .edit(record))
+                                    } else {
+                                        ReadOnlyRecordDetailView(record: record)
+                                    }
+                                } label: {
+                                    MZRecordRow(record: record)
+                                        .padding(.horizontal, 16)
+                                }
+                                .buttonStyle(.plain)
+                                if index < records.count - 1 {
+                                    MZDivider().padding(.horizontal, 16)
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
-        .navigationTitle(modeTitle)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("取消") {
-                    dismiss()
-                }
-            }
-            ToolbarItem(placement: .confirmationAction) {
-                Button("保存") {
-                    if save() {
-                        dismiss()
-                    }
-                }
-                .accessibilityIdentifier("investment_save_button")
-            }
-        }
-        .confirmationDialog("确认删除交易？", isPresented: $isShowingDeleteConfirmation, titleVisibility: .visible) {
-            Button("删除交易", role: .destructive) {
-                if case .edit(let transaction) = mode, store.deleteInvestmentTransaction(id: transaction.id) {
-                    dismiss()
-                }
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("删除后会重新计算投资回填和账月结果。")
-        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+        .onAppear(perform: loadRecords)
     }
 
-    private var modeTitle: String {
-        switch mode {
-        case .create:
-            "新增交易"
-        case .edit:
-            "编辑交易"
-        }
-    }
-
-    private func save() -> Bool {
-        switch mode {
-        case .create:
-            return store.createInvestmentTransaction(input: input)
-        case .edit(let transaction):
-            return store.updateInvestmentTransaction(id: transaction.id, input: input)
+    private func loadRecords() {
+        do {
+            records = try store.querySourceRecords(recordIds: recordIds)
+        } catch {
+            store.lastError = error.localizedDescription
         }
     }
 }
+
+// MARK: - 统计
 
 struct StatisticsView: View {
     @EnvironmentObject private var store: LedgerStore
@@ -1470,120 +2635,101 @@ struct StatisticsView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("支出结构") {
-                    if store.statisticsSummary.expenseByType.isEmpty {
-                        ContentUnavailableView("暂无支出", systemImage: "chart.bar")
-                    } else {
-                        ForEach(store.statisticsSummary.expenseByType, id: \.typeName) { item in
-                            if item.sourceRecordIds.isEmpty {
-                                SummaryRow(title: item.typeName, value: item.amount)
-                            } else {
-                                NavigationLink {
-                                    ExpenseCategoryDetailView(item: item)
-                                } label: {
-                                    SummaryRow(title: item.typeName, value: item.amount)
-                                }
+            MZPage(bottomInset: 112) {
+                MZTopBar(
+                    title: "统计",
+                    monthTitle: store.accountMonth.displayMonth,
+                    onMonthTap: { isShowingMonthPicker = true }
+                )
+
+                MZCard {
+                    Text("结果总览")
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                    MZMetricTriplet(items: [
+                        ("收入", store.homeSummary.incomeTotal),
+                        ("支出", store.homeSummary.expenseTotal),
+                        ("结余", store.homeSummary.balance)
+                    ])
+                    Text("收入 - 支出 = 结余")
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.ink)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+
+                MZStructureCard(
+                    title: "收支结构",
+                    total: store.homeSummary.expenseTotal,
+                    items: expenseItems,
+                    onItemTap: { _ in }
+                )
+
+                MZCard {
+                    HStack {
+                        Text("资产负债变化")
+                            .font(.title3.weight(.bold))
+                        Spacer()
+                        NavigationLink {
+                            BalanceChangeDetailView()
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text("查看详情")
+                                Image(systemName: "chevron.right")
                             }
+                            .foregroundStyle(MZTheme.accent)
                         }
                     }
+                    SummaryLine(title: "资产增加", value: store.balanceSummary.cashBalance.moneyText)
+                    MZDivider()
+                    SummaryLine(title: "负债减少", value: "0.00")
+                    MZDivider()
+                    SummaryLine(title: "递延资产释放", value: "0.00")
+                    MZDivider()
+                    SummaryLine(title: "投资成本变化", value: store.investmentMonthlySummary.endingBookValue.moneyText)
                 }
 
-                Section("投资结果") {
-                    SummaryRow(title: "已实现收益", value: store.investmentMonthlySummary.realizedGain)
-                    SummaryRow(title: "已实现亏损", value: store.investmentMonthlySummary.realizedLoss)
-                    SummaryRow(
-                        title: "已实现净结果",
-                        value: store.investmentMonthlySummary.realizedGain - store.investmentMonthlySummary.realizedLoss
-                    )
-                    SummaryRow(title: "投资资产期末", value: store.investmentMonthlySummary.endingBookValue)
-                    NavigationLink {
-                        InvestmentResultView()
-                    } label: {
-                        Text("查看投资结果")
+                MZCard {
+                    HStack {
+                        Text("投资结果")
+                            .font(.title3.weight(.bold))
+                        Spacer()
+                        NavigationLink {
+                            InvestmentResultDetailView()
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text("查看详情")
+                                Image(systemName: "chevron.right")
+                            }
+                            .foregroundStyle(MZTheme.accent)
+                        }
                     }
-                }
-
-                Section("来源") {
-                    Text("来源流水 \(store.statisticsSummary.sourceRecordIds.count) 条")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .navigationTitle("统计")
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Button {
-                        isShowingMonthPicker = true
-                    } label: {
-                        Label(store.accountMonth, systemImage: "calendar")
-                            .labelStyle(.titleAndIcon)
-                    }
+                    SummaryLine(title: "已实现收益", value: store.investmentMonthlySummary.realizedGain.moneyText)
+                    MZDivider()
+                    SummaryLine(title: "已实现亏损", value: store.investmentMonthlySummary.realizedLoss.moneyText)
+                    MZDivider()
+                    SummaryLine(title: "未实现盈亏", value: investmentUnrealizedGain.moneyText)
                 }
             }
             .sheet(isPresented: $isShowingMonthPicker) {
                 MonthPickerView()
             }
+            .toolbar(.hidden, for: .navigationBar)
         }
     }
-}
 
-struct InvestmentResultView: View {
-    @EnvironmentObject private var store: LedgerStore
-
-    var body: some View {
-        List {
-            Section("汇总") {
-                SummaryRow(title: "已实现收益", value: store.investmentMonthlySummary.realizedGain)
-                SummaryRow(title: "已实现亏损", value: store.investmentMonthlySummary.realizedLoss)
-                SummaryRow(title: "投资资产期末", value: store.investmentMonthlySummary.endingBookValue)
-            }
-
-            Section("基金") {
-                if store.investmentHoldings.isEmpty {
-                    ContentUnavailableView("暂无投资结果", systemImage: "chart.line.uptrend.xyaxis")
-                } else {
-                    ForEach(store.investmentHoldings) { holding in
-                        NavigationLink {
-                            InvestmentFundResultView(fundName: holding.fundName)
-                        } label: {
-                            SummaryRow(title: holding.fundName, value: holding.bookValue)
-                        }
-                    }
-                }
-            }
+    private var expenseItems: [CategoryDisplayItem] {
+        store.statisticsSummary.expenseByType.enumerated().map { index, item in
+            CategoryDisplayItem(
+                name: item.typeName,
+                amount: item.amount.absoluteValue,
+                color: MZTheme.categoryColors[index % MZTheme.categoryColors.count],
+                sourceRecordIds: item.sourceRecordIds
+            )
         }
-        .navigationTitle("投资结果")
     }
-}
 
-struct InvestmentFundResultView: View {
-    @EnvironmentObject private var store: LedgerStore
-    let fundName: String
-    @State private var summary: InvestmentMonthlySummary?
-
-    var body: some View {
-        List {
-            if let summary {
-                Section("结果") {
-                    SummaryRow(title: "卖出入账", value: summary.sellBookAmount)
-                    SummaryRow(title: "已实现收益", value: summary.realizedGain)
-                    SummaryRow(title: "已实现亏损", value: summary.realizedLoss)
-                    SummaryRow(title: "期末账面价值", value: summary.endingBookValue)
-                }
-            }
-
-            Section("明细") {
-                NavigationLink {
-                    InvestmentLedgerView(fundName: fundName)
-                } label: {
-                    Text("查看投资明细账")
-                }
-            }
-        }
-        .navigationTitle(fundName)
-        .onAppear {
-            summary = store.loadInvestmentMonthlySummary(fundName: fundName)
-        }
+    private var investmentUnrealizedGain: Decimal {
+        store.investmentHoldings.reduce(Decimal.zero) { $0 + ($1.unrealizedGain ?? 0) }
     }
 }
 
@@ -1592,95 +2738,531 @@ struct ExpenseCategoryDetailView: View {
     let item: ExpenseTypeSummary
 
     var body: some View {
-        List {
-            Section("金额") {
-                SummaryRow(title: item.typeName, value: item.amount)
-            }
+        VStack(spacing: 0) {
+            MZBackHeader(title: item.typeName)
+            MZPage {
+                MZCard {
+                    Text(item.amount.moneyText)
+                        .font(.largeTitle.weight(.bold))
+                        .monospacedDigit()
+                    Text("当前范围金额")
+                        .foregroundStyle(MZTheme.secondaryInk)
+                }
 
-            Section("来源") {
-                NavigationLink {
-                    SourceRecordsView(
-                        title: "\(item.typeName) 来源",
-                        filterDescription: "\(store.accountMonth) / \(item.typeName)",
-                        recordIds: item.sourceRecordIds
-                    )
-                } label: {
-                    Text("来源流水 \(item.sourceRecordIds.count) 条")
+                MZCard {
+                    NavigationLink {
+                        SourceRecordsView(
+                            title: "\(item.typeName) 来源",
+                            filterDescription: "\(store.accountMonth.displayMonth) / \(item.typeName)",
+                            recordIds: item.sourceRecordIds
+                        )
+                    } label: {
+                        MZIconRow(title: "查看来源", subtitle: "回到流水解释分类结果", systemImage: "list.bullet.rectangle", trailing: "\(item.sourceRecordIds.count) 条")
+                    }
                 }
             }
         }
-        .navigationTitle(item.typeName)
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
     }
 }
+
+struct BalanceChangeDetailView: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: "资产负债变化")
+            MZPage {
+                MZCard {
+                    SummaryLine(title: "资产增加", value: "0.00")
+                    MZDivider()
+                    SummaryLine(title: "资产减少", value: "0.00")
+                    MZDivider()
+                    SummaryLine(title: "负债增加", value: "0.00")
+                    MZDivider()
+                    SummaryLine(title: "负债减少", value: "0.00")
+                }
+                MZCard {
+                    MZEmptyState(title: "来源按流水回溯", systemImage: "list.bullet.rectangle", subtitle: "有真实来源记录时，从这里回到来源流水筛选态")
+                }
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+    }
+}
+
+struct InvestmentResultDetailView: View {
+    @EnvironmentObject private var store: LedgerStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: "投资结果")
+            MZPage {
+                MZCard {
+                    MZMetricTriplet(items: [
+                        ("已实现收益", store.investmentMonthlySummary.realizedGain),
+                        ("已实现亏损", store.investmentMonthlySummary.realizedLoss),
+                        ("未实现盈亏", investmentUnrealizedGain)
+                    ])
+                }
+
+                MZCard(padding: 0) {
+                    if store.investmentHoldings.isEmpty {
+                        MZEmptyState(title: "暂无投资结果", systemImage: "chart.line.uptrend.xyaxis")
+                            .frame(maxWidth: .infinity)
+                            .padding(20)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(Array(store.investmentHoldings.enumerated()), id: \.element.id) { index, holding in
+                                NavigationLink {
+                                    InstrumentResultDetailView(fundName: holding.fundName)
+                                } label: {
+                                    MZIconRow(
+                                        title: holding.fundName,
+                                        subtitle: "查看标的收益和明细账",
+                                        systemImage: "chart.line.uptrend.xyaxis",
+                                        trailing: holding.bookValue.moneyText
+                                    )
+                                    .padding(.horizontal, 16)
+                                }
+                                .buttonStyle(.plain)
+                                if index < store.investmentHoldings.count - 1 {
+                                    MZDivider().padding(.horizontal, 16)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+    }
+
+    private var investmentUnrealizedGain: Decimal {
+        store.investmentHoldings.reduce(Decimal.zero) { $0 + ($1.unrealizedGain ?? 0) }
+    }
+}
+
+struct InstrumentResultDetailView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let fundName: String
+    @State private var summary: InvestmentMonthlySummary?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: fundName)
+            MZPage {
+                if let summary {
+                    MZCard {
+                        SummaryLine(title: "卖出入账", value: summary.sellBookAmount.moneyText)
+                        MZDivider()
+                        SummaryLine(title: "已实现收益", value: summary.realizedGain.moneyText)
+                        MZDivider()
+                        SummaryLine(title: "已实现亏损", value: summary.realizedLoss.moneyText)
+                        MZDivider()
+                        SummaryLine(title: "期末账面价值", value: summary.endingBookValue.moneyText)
+                    }
+                }
+
+                MZCard {
+                    NavigationLink {
+                        InvestmentLedgerView(fundName: fundName)
+                    } label: {
+                        MZIconRow(title: "查看投资明细账", subtitle: "交易、成本、回填流水", systemImage: "list.bullet.rectangle")
+                    }
+                }
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+        .onAppear {
+            summary = store.loadInvestmentMonthlySummary(fundName: fundName)
+        }
+    }
+}
+
+// MARK: - 设置
 
 struct SettingsView: View {
     @EnvironmentObject private var store: LedgerStore
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("P0 默认配置") {
-                    LabeledContent("收付手段", value: store.methods.map(\.name).joined(separator: " / "))
-                    LabeledContent("收付类型", value: store.types.map(\.name).joined(separator: " / "))
-                    LabeledContent("类型明细", value: store.details.map(\.name).joined(separator: " / "))
+            MZPage(bottomInset: 112) {
+                MZTopBar(title: "设置")
+
+                Text("记账配置")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(MZTheme.secondaryInk)
+
+                MZCard {
+                    NavigationLink {
+                        PaymentMethodsSettingsView()
+                    } label: {
+                        MZIconRow(title: "收付手段", subtitle: "管理资产型、负债型和账务处理型", systemImage: "wallet.pass")
+                    }
+                    MZDivider()
+                    NavigationLink {
+                        PaymentTypesSettingsView()
+                    } label: {
+                        MZIconRow(title: "收付类型与明细", subtitle: "维护收付类型和类型明细", systemImage: "list.bullet.rectangle")
+                    }
                 }
 
-                Section("边界") {
-                    Text("支付宝/微信导入、基金投资、备份恢复将在 P1 接入。")
-                        .foregroundStyle(.secondary)
+                Text("数据管理")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(MZTheme.secondaryInk)
+
+                MZCard {
+                    NavigationLink {
+                        DataManagementPlaceholderView(title: "数据导出", message: "导出明账数据文件，后续接入备份格式后启用。")
+                    } label: {
+                        MZIconRow(title: "数据导出", subtitle: "导出明账数据文件", systemImage: "square.and.arrow.up")
+                    }
+                    MZDivider()
+                    NavigationLink {
+                        DataManagementPlaceholderView(title: "数据导入", message: "仅用于新明账自己的数据文件，不用于支付宝/微信账单。")
+                    } label: {
+                        MZIconRow(title: "数据导入", subtitle: "导入明账数据文件", systemImage: "square.and.arrow.down")
+                    }
+                    MZDivider()
+                    NavigationLink {
+                        DataClearConfirmView()
+                    } label: {
+                        MZIconRow(title: "数据清空", subtitle: "清空全部数据（慎用）", systemImage: "trash", tint: MZTheme.danger)
+                    }
+                }
+
+                Text("App 设置")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(MZTheme.secondaryInk)
+
+                MZCard {
+                    NavigationLink {
+                        DataManagementPlaceholderView(title: "外观", message: "主题和字体大小等设置后续接入。")
+                    } label: {
+                        MZIconRow(title: "外观", subtitle: "主题、字体大小等", systemImage: "tshirt")
+                    }
+                    MZDivider()
+                    NavigationLink {
+                        DataManagementPlaceholderView(title: "隐私", message: "隐私与数据权限设置后续接入。")
+                    } label: {
+                        MZIconRow(title: "隐私", subtitle: "隐私与数据权限", systemImage: "shield")
+                    }
+                    MZDivider()
+                    NavigationLink {
+                        DataManagementPlaceholderView(title: "安全", message: "应用锁、备份等安全设置后续接入。")
+                    } label: {
+                        MZIconRow(title: "安全", subtitle: "应用锁、备份等", systemImage: "lock")
+                    }
+                    MZDivider()
+                    NavigationLink {
+                        DataManagementPlaceholderView(title: "关于", message: "版本与帮助信息后续接入。")
+                    } label: {
+                        MZIconRow(title: "关于", subtitle: "版本与帮助", systemImage: "info.circle")
+                    }
                 }
             }
-            .navigationTitle("设置")
+            .toolbar(.hidden, for: .navigationBar)
         }
     }
 }
 
-struct JournalRecordRow: View {
-    let record: JournalRecord
+struct PaymentMethodsSettingsView: View {
+    @EnvironmentObject private var store: LedgerStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(record.paymentMethodName)
-                    .font(.headline)
-                Spacer()
-                Text(record.amount.mingZhangAmountText)
-                    .font(.headline)
-            }
-            Text("\(record.paymentTypeName) / \(record.paymentDetailName)")
-                .foregroundStyle(.secondary)
-            Text(record.recordSource.displayName)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            if let note = record.note, !note.isEmpty {
-                Text(note)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            MZBackHeader(title: "收付手段管理", trailingSystemImage: "plus")
+            MZPage {
+                ForEach(PaymentMethodType.visibleOrder, id: \.self) { type in
+                    MZCard {
+                        Text(type.displayName)
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(MZTheme.ink)
+                        let methods = store.methods.filter { $0.methodType == type }
+                        if methods.isEmpty {
+                            MZEmptyState(title: "暂无\(type.displayName)", systemImage: "wallet.pass")
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            ForEach(Array(methods.enumerated()), id: \.element.id) { index, method in
+                                HStack {
+                                    Text(method.name)
+                                        .foregroundStyle(MZTheme.ink)
+                                    Spacer()
+                                    Text(method.isActive ? "启用" : "停用")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(method.isActive ? MZTheme.accent : MZTheme.tertiaryInk)
+                                }
+                                .frame(minHeight: 44)
+                                if index < methods.count - 1 {
+                                    MZDivider()
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
-        .padding(.vertical, 4)
-        .accessibilityIdentifier("journal_record_row_\(record.id.uuidString.prefix(8))")
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
     }
 }
 
-struct SummaryRow: View {
+struct PaymentTypesSettingsView: View {
+    @EnvironmentObject private var store: LedgerStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: "收付类型与明细", trailingSystemImage: "plus")
+            MZPage {
+                ForEach(AccountingElement.visibleOrder, id: \.self) { element in
+                    MZCard {
+                        Text(element.displayName)
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(MZTheme.ink)
+                        let types = store.types.filter { $0.element == element }
+                        if types.isEmpty {
+                            MZEmptyState(title: "暂无\(element.displayName)类型", systemImage: "list.bullet")
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            ForEach(Array(types.enumerated()), id: \.element.id) { typeIndex, type in
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text(type.name)
+                                        .font(.body.weight(.semibold))
+                                        .foregroundStyle(MZTheme.ink)
+                                    let details = store.details.filter { $0.paymentTypeId == type.id }
+                                    ForEach(details) { detail in
+                                        NavigationLink {
+                                            TypeDetailEditView(type: type, detail: detail)
+                                        } label: {
+                                            HStack {
+                                                Text(detail.name)
+                                                    .foregroundStyle(MZTheme.secondaryInk)
+                                                Spacer()
+                                                Text(detail.isActive ? "启用" : "停用")
+                                                    .font(.caption)
+                                                    .foregroundStyle(detail.isActive ? MZTheme.accent : MZTheme.tertiaryInk)
+                                                Image(systemName: "chevron.right")
+                                                    .font(.caption.weight(.bold))
+                                                    .foregroundStyle(MZTheme.tertiaryInk)
+                                            }
+                                            .padding(.leading, 12)
+                                            .frame(minHeight: 34)
+                                        }
+                                    }
+                                }
+                                if typeIndex < types.count - 1 {
+                                    MZDivider()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+    }
+}
+
+struct TypeDetailEditView: View {
+    let type: PaymentType
+    let detail: PaymentDetail
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: "类型明细编辑")
+            MZPage {
+                MZCard {
+                    SummaryLine(title: "名称", value: detail.name)
+                    MZDivider()
+                    SummaryLine(title: "所属收付类型", value: type.name)
+                    MZDivider()
+                    SummaryLine(title: "层级", value: "类型明细")
+                    MZDivider()
+                    SummaryLine(title: "状态", value: detail.isActive ? "启用" : "停用")
+                }
+
+                MZCard {
+                    Text("语义描述")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                    Text("用于帮助理解分类边界；第一版不作为自动规则中心。")
+                        .font(.body)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                }
+
+                MZPrimaryButton(title: "保存类型明细", isDisabled: true) {}
+                MZLightButton(title: "停用此类型明细", systemImage: "pause.circle") {}
+                    .disabled(true)
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+    }
+}
+
+struct DataManagementPlaceholderView: View {
     let title: String
-    let value: Decimal
+    let message: String
 
     var body: some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text(value.mingZhangAmountText)
-                .monospacedDigit()
-        }
+        MZPlaceholderPage(title: title, message: message)
     }
 }
+
+struct DataClearConfirmView: View {
+    @State private var confirmText = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: "数据清空确认")
+            MZPage {
+                MZCard {
+                    Text("清空全部数据")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.danger)
+                    Text("此操作会清空本机账本数据。本轮只重画确认页面壳，不接真实清空命令。")
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                    MZFieldRow(title: "确认文字") {
+                        TextField("输入 清空全部数据", text: $confirmText)
+                    }
+                }
+
+                MZLightButton(title: "先导出数据", systemImage: "square.and.arrow.up") {}
+                    .disabled(true)
+
+                MZPrimaryButton(title: "确认清空", isDisabled: true) {}
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+    }
+}
+
+// MARK: - 通用行
+
+private struct SummaryLine: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .foregroundStyle(MZTheme.secondaryInk)
+            Spacer(minLength: 16)
+            Text(value)
+                .fontWeight(.semibold)
+                .foregroundStyle(MZTheme.ink)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+        }
+        .font(.body)
+        .frame(minHeight: 36)
+    }
+}
+
+// MARK: - 扩展
 
 private extension Decimal {
-    var mingZhangAmountText: String {
+    var moneyText: String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSDecimalNumber(decimal: self)) ?? NSDecimalNumber(decimal: self).stringValue
+    }
+
+    var absoluteValue: Decimal {
         let number = NSDecimalNumber(decimal: self)
-        return number.stringValue
+        if number.compare(NSDecimalNumber(value: 0)) == .orderedAscending {
+            return number.multiplying(by: NSDecimalNumber(value: -1)).decimalValue
+        }
+        return self
+    }
+
+    var doubleValue: Double {
+        NSDecimalNumber(decimal: self).doubleValue
+    }
+}
+
+private extension CategoryDisplayItem {
+    func percentCGFloat(of total: Decimal) -> CGFloat {
+        guard total.doubleValue != 0 else { return 0 }
+        return CGFloat(max(0, amount.doubleValue / total.doubleValue))
+    }
+
+    func percentText(of total: Decimal) -> String {
+        guard total.doubleValue != 0 else { return "0.0%" }
+        return String(format: "%.1f%%", amount.doubleValue / total.doubleValue * 100)
+    }
+}
+
+private extension Date {
+    var recordListText: String {
+        Self.recordListFormatter.string(from: self)
+    }
+
+    var recentDayText: String {
+        let calendar = Calendar.current
+        let time = Self.timeFormatter.string(from: self)
+        if calendar.isDateInToday(self) {
+            return "今天 \(time)"
+        }
+        if calendar.isDateInYesterday(self) {
+            return "昨天 \(time)"
+        }
+        return Self.monthDayTimeFormatter.string(from: self)
+    }
+
+    var fullText: String {
+        Self.fullFormatter.string(from: self)
+    }
+
+    private static let recordListFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm:ss"
+        return formatter
+    }()
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    private static let monthDayTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter
+    }()
+
+    private static let fullFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter
+    }()
+}
+
+private extension String {
+    var displayMonth: String {
+        let parts = split(separator: "-")
+        guard parts.count == 2, let month = Int(parts[1]) else { return self }
+        return "\(parts[0])年\(month)月"
+    }
+}
+
+private extension JournalRecord {
+    var isDirectlyEditable: Bool {
+        recordSource == .manual || recordSource == .import
+    }
+
+    var noteTextSuffix: String {
+        guard let note, !note.isEmpty else { return "" }
+        return " / \(note)"
     }
 }
 
@@ -1695,6 +3277,19 @@ private extension RecordSource {
             return "投资回填"
         case .engine:
             return "引擎"
+        }
+    }
+
+    var longDisplayName: String {
+        switch self {
+        case .manual:
+            return "手工记录"
+        case .import:
+            return "导入记录"
+        case .investmentFeed:
+            return "投资回填"
+        case .engine:
+            return "引擎生成"
         }
     }
 }
@@ -1738,6 +3333,40 @@ private extension ImportIssueCode {
             return "重复记录"
         case .unsupportedDirection:
             return "非收支交易"
+        }
+    }
+}
+
+private extension PaymentMethodType {
+    static let visibleOrder: [PaymentMethodType] = [.asset, .liability, .accounting, .pendingRealAccount]
+
+    var displayName: String {
+        switch self {
+        case .asset:
+            return "资产型收付手段"
+        case .liability:
+            return "负债型收付手段"
+        case .accounting:
+            return "账务处理型收付手段"
+        case .pendingRealAccount:
+            return "待补真实账户"
+        }
+    }
+}
+
+private extension AccountingElement {
+    static let visibleOrder: [AccountingElement] = [.asset, .liability, .income, .expense]
+
+    var displayName: String {
+        switch self {
+        case .asset:
+            return "资产"
+        case .liability:
+            return "负债"
+        case .income:
+            return "收入"
+        case .expense:
+            return "支出"
         }
     }
 }
