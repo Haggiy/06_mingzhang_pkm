@@ -118,6 +118,37 @@ final class ImportMemoryUITests: XCTestCase {
         screenshotDirectory != nil
     }
 
+    func tapBackButton() {
+        let backButton = app.buttons["返回"].firstMatch
+        if backButton.waitForExistence(timeout: 3) {
+            backButton.tap()
+        } else if app.navigationBars.buttons.firstMatch.exists {
+            app.navigationBars.buttons.firstMatch.tap()
+        }
+    }
+
+    func closePresentedSheet() {
+        let closeButton = app.buttons["关闭"].firstMatch
+        if closeButton.waitForExistence(timeout: 3) {
+            closeButton.tap()
+            return
+        }
+
+        let cancelButton = app.buttons["month_picker_cancel"].firstMatch
+        if cancelButton.waitForExistence(timeout: 2) {
+            cancelButton.tap()
+        }
+    }
+
+    func tapVisibleButton(identifier: String, timeout: TimeInterval = 5) {
+        let button = app.buttons[identifier].firstMatch
+        XCTAssertTrue(button.waitForExistence(timeout: timeout), "应存在按钮 \(identifier)")
+        if !button.isHittable {
+            app.swipeUp()
+        }
+        button.tap()
+    }
+
     // MARK: - 导航
 
     func testV51PrimaryTabsExposeCoreSectionsAndQuickMenu() {
@@ -165,6 +196,11 @@ final class ImportMemoryUITests: XCTestCase {
         app.buttons["btn_home_quick_close"].tap()
         XCTAssertFalse(app.buttons["btn_home_quick_close"].exists)
 
+        tapVisibleButton(identifier: "btn_month_picker")
+        XCTAssertTrue(app.staticTexts["账月范围"].waitForExistence(timeout: 5))
+        captureV51Screenshot("09-账月范围")
+        closePresentedSheet()
+
         app.waitForMingZhangTab("流水").tap()
         let recordCountLabel = app.staticTexts.containing(NSPredicate(format: "label CONTAINS '共'")).firstMatch
         XCTAssertTrue(recordCountLabel.waitForExistence(timeout: 5))
@@ -172,6 +208,16 @@ final class ImportMemoryUITests: XCTestCase {
         XCTAssertTrue(app.buttons["点击这里记一笔"].exists)
         XCTAssertTrue(app.buttons["筛选"].exists)
         captureV51Screenshot("03-流水")
+
+        tapVisibleButton(identifier: "journal_filter_button")
+        XCTAssertTrue(app.staticTexts["筛选"].waitForExistence(timeout: 5))
+        captureV51Screenshot("10-流水-筛选")
+        closePresentedSheet()
+
+        tapVisibleButton(identifier: "journal_search_button")
+        XCTAssertTrue(app.staticTexts["搜索"].waitForExistence(timeout: 5))
+        captureV51Screenshot("11-流水-搜索")
+        tapBackButton()
 
         if isCapturingV51Screenshots {
             let firstRecord = app.buttons.matching(NSPredicate(format: "label CONTAINS '/'")).firstMatch
@@ -207,12 +253,41 @@ final class ImportMemoryUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["数据管理"].exists)
         XCTAssertTrue(app.staticTexts["App 设置"].exists)
         captureV51Screenshot("07-设置")
+
+        tapVisibleButton(identifier: "settings_payment_methods")
+        XCTAssertTrue(app.staticTexts["收付手段管理"].waitForExistence(timeout: 5))
+        captureV51Screenshot("12-收付手段管理")
+        tapBackButton()
+
+        XCTAssertTrue(app.staticTexts["记账配置"].waitForExistence(timeout: 5))
+        tapVisibleButton(identifier: "settings_payment_types")
+        XCTAssertTrue(app.staticTexts["收付类型与明细"].waitForExistence(timeout: 5))
+        captureV51Screenshot("13-收付类型与明细")
+
+        let detailRow = app.buttons["payment_detail_row_伙食费"].firstMatch
+        for _ in 0..<5 where !detailRow.isHittable {
+            app.swipeUp()
+        }
+        if detailRow.exists && detailRow.isHittable {
+            detailRow.tap()
+            XCTAssertTrue(app.staticTexts["类型明细编辑"].waitForExistence(timeout: 5))
+            captureV51Screenshot("14-类型明细编辑")
+            tapBackButton()
+        }
+
+        tapBackButton()
+        XCTAssertTrue(app.staticTexts["记账配置"].waitForExistence(timeout: 5))
+        tapVisibleButton(identifier: "settings_data_clear")
+        XCTAssertTrue(app.staticTexts["数据清空确认"].waitForExistence(timeout: 5))
+        captureV51Screenshot("15-数据清空确认")
+        tapBackButton()
     }
 
     func navigateToImport(source: String) {
-        XCTAssertTrue(app.waitForMingZhangTab("流水").exists)
-        app.waitForMingZhangTab("流水").tap()
-        sleep(1)
+        XCTAssertTrue(app.waitForMingZhangTab("首页").exists)
+        app.waitForMingZhangTab("首页").tap()
+        XCTAssertTrue(app.buttons["btn_home_quick_add"].waitForExistence(timeout: 5))
+        app.buttons["btn_home_quick_add"].tap()
         XCTAssertTrue(app.buttons["导入账单"].waitForExistence(timeout: 5))
         app.buttons["导入账单"].tap()
         sleep(1)
@@ -368,6 +443,28 @@ final class InvestmentLedgerUITests: XCTestCase {
         app.terminate()
     }
 
+    var screenshotDirectory: URL? {
+        let markerPath = "/tmp/mingzhang-v51-screenshots/.enabled"
+        let path: String
+        if let environmentPath = ProcessInfo.processInfo.environment["MZ_SCREENSHOT_DIR"], !environmentPath.isEmpty {
+            path = environmentPath
+        } else if FileManager.default.fileExists(atPath: markerPath) {
+            path = "/tmp/mingzhang-v51-screenshots"
+        } else {
+            return nil
+        }
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    func captureV51Screenshot(_ name: String) {
+        guard let screenshotDirectory else { return }
+        let screenshot = XCUIScreen.main.screenshot()
+        let outputURL = screenshotDirectory.appendingPathComponent("\(name).png")
+        try? screenshot.pngRepresentation.write(to: outputURL)
+    }
+
     func testInvestmentLedgerShowsInvestmentAssetEntryAndFundRow() {
         app.launch()
 
@@ -379,5 +476,10 @@ final class InvestmentLedgerUITests: XCTestCase {
 
         let fundRow = app.buttons["investment_fund_row_沪深300指数A"]
         XCTAssertTrue(fundRow.waitForExistence(timeout: 10))
+        fundRow.tap()
+
+        XCTAssertTrue(app.staticTexts["基金投资明细账"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["investment_ledger_fund_name"].waitForExistence(timeout: 5))
+        captureV51Screenshot("16-基金投资明细账")
     }
 }
