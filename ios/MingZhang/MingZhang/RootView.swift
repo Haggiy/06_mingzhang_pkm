@@ -50,7 +50,28 @@ struct RootView: View {
 // MARK: - 视觉系统
 
 private final class MZRootTabVisibility: ObservableObject {
-    @Published var isHidden = false
+    @Published private(set) var isHidden = false
+    private var detailDepth = 0
+    private var overlayHidden = false
+
+    func detailAppeared() {
+        detailDepth += 1
+        refresh()
+    }
+
+    func detailDisappeared() {
+        detailDepth = max(0, detailDepth - 1)
+        refresh()
+    }
+
+    func setOverlayHidden(_ hidden: Bool) {
+        overlayHidden = hidden
+        refresh()
+    }
+
+    private func refresh() {
+        isHidden = detailDepth > 0 || overlayHidden
+    }
 }
 
 private enum MZRootTab: String, CaseIterable, Identifiable {
@@ -255,6 +276,7 @@ private struct MZTopBar: View {
 private struct MZBackHeader: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var tabVisibility: MZRootTabVisibility
+    @State private var didRegisterVisibility = false
     let title: String
     var trailingSystemImage: String?
     var trailingTitle: String?
@@ -306,10 +328,16 @@ private struct MZBackHeader: View {
         .padding(.bottom, 6)
         .background(MZTheme.page)
         .onAppear {
-            tabVisibility.isHidden = true
+            if !didRegisterVisibility {
+                tabVisibility.detailAppeared()
+                didRegisterVisibility = true
+            }
         }
         .onDisappear {
-            tabVisibility.isHidden = false
+            if didRegisterVisibility {
+                tabVisibility.detailDisappeared()
+                didRegisterVisibility = false
+            }
         }
     }
 }
@@ -405,8 +433,11 @@ private struct MZStructureCard: View {
                                     .foregroundStyle(MZTheme.secondaryInk)
                             }
                             .font(.footnote)
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("structure_item_\(item.name)")
                     }
                 }
             }
@@ -539,9 +570,11 @@ private struct MZCompactStructureSection: View {
                                     .foregroundStyle(MZTheme.secondaryInk)
                             }
                             .font(.footnote)
-                            .frame(minHeight: 24)
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("structure_item_\(item.name)")
                     }
                 }
             }
@@ -1122,11 +1155,13 @@ private struct MonthOptionRow: View {
 
 struct HomeView: View {
     @EnvironmentObject private var store: LedgerStore
+    @EnvironmentObject private var tabVisibility: MZRootTabVisibility
     @State private var isShowingForm = false
     @State private var isShowingMonthPicker = false
     @State private var isShowingQuickMenu = false
     @State private var isShowingImport = false
     @State private var isShowingSearch = false
+    @State private var presentedCategory: CategoryDisplayItem?
     @State private var selectedCategory: CategoryDisplayItem?
 
     var body: some View {
@@ -1154,14 +1189,14 @@ struct HomeView: View {
                         title: "收入结构",
                         total: store.homeSummary.incomeTotal,
                         items: categoryItems(for: .income),
-                        onItemTap: { selectedCategory = $0 }
+                        onItemTap: { presentedCategory = $0 }
                     )
 
                     MZStructureCard(
                         title: "支出结构",
                         total: store.homeSummary.expenseTotal,
                         items: categoryItems(for: .expense),
-                        onItemTap: { selectedCategory = $0 }
+                        onItemTap: { presentedCategory = $0 }
                     )
 
                     recentRecordsCard
@@ -1210,9 +1245,52 @@ struct HomeView: View {
                     .padding(.trailing, 18)
                     .padding(.bottom, 92)
                 }
+
+                if let category = presentedCategory {
+                    Color.black.opacity(0.28)
+                        .ignoresSafeArea()
+                        .zIndex(2)
+
+                    VStack {
+                        Spacer()
+                        CategoryBottomSheetView(
+                            category: category,
+                            total: categoryTotal(for: category),
+                            onClose: {
+                                presentedCategory = nil
+                            },
+                            onOpenDetail: {
+                                presentedCategory = nil
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                                    selectedCategory = category
+                                }
+                            }
+                        )
+                        .frame(maxHeight: UIScreen.main.bounds.height * 0.74)
+                        .clipShape(
+                            UnevenRoundedRectangle(
+                                topLeadingRadius: 28,
+                                bottomLeadingRadius: 0,
+                                bottomTrailingRadius: 0,
+                                topTrailingRadius: 28,
+                                style: .continuous
+                            )
+                        )
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .zIndex(3)
+                }
             }
             .navigationDestination(item: $selectedCategory) { category in
                 CategoryDetailView(category: category, total: categoryTotal(for: category))
+            }
+            .onChange(of: presentedCategory != nil) {
+                tabVisibility.setOverlayHidden(presentedCategory != nil)
+            }
+            .onDisappear {
+                if presentedCategory != nil {
+                    tabVisibility.setOverlayHidden(false)
+                }
             }
             .sheet(isPresented: $isShowingForm) {
                 NavigationStack { JournalFormView(mode: .create) }
@@ -1347,32 +1425,276 @@ private struct QuickMenuButton: View {
     }
 }
 
+private struct CategoryBottomSheetView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let category: CategoryDisplayItem
+    let total: Decimal
+    let onClose: () -> Void
+    let onOpenDetail: () -> Void
+    @State private var records: [JournalRecord] = []
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Capsule()
+                        .fill(MZTheme.line)
+                        .frame(width: 48, height: 5)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                    Text(category.name)
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                }
+                Spacer()
+                Button {
+                    onClose()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.title3.weight(.medium))
+                        .foregroundStyle(MZTheme.ink)
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("关闭")
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 4)
+
+            MZPage(bottomInset: 20) {
+                MZCard {
+                    HStack(alignment: .lastTextBaseline, spacing: 18) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(category.amount.moneyText)
+                                .font(.largeTitle.weight(.bold))
+                                .monospacedDigit()
+                                .foregroundStyle(MZTheme.ink)
+                                .minimumScaleFactor(0.72)
+                                .lineLimit(1)
+                            Text("单位：元")
+                                .font(.footnote)
+                                .foregroundStyle(MZTheme.secondaryInk)
+                        }
+
+                        Rectangle()
+                            .fill(MZTheme.line)
+                            .frame(width: 1, height: 44)
+
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("占当前")
+                                .font(.footnote)
+                                .foregroundStyle(MZTheme.secondaryInk)
+                            Text(category.percentText(of: total))
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(MZTheme.ink)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                }
+
+                MZCard(spacing: 0) {
+                    Text("二级明细")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                        .padding(.bottom, 8)
+
+                    if detailItems.isEmpty {
+                        MZEmptyState(title: "暂无明细", systemImage: "chart.pie")
+                    } else {
+                        ForEach(Array(detailItems.enumerated()), id: \.offset) { index, item in
+                            HStack(spacing: 10) {
+                                Circle()
+                                    .fill(item.color)
+                                    .frame(width: 8, height: 8)
+                                Text(item.name)
+                                    .font(.subheadline)
+                                    .foregroundStyle(MZTheme.ink)
+                                ProgressView(value: item.amount.doubleValue, total: max(category.amount.doubleValue, 1))
+                                    .tint(item.color)
+                                Text(item.amount.moneyText)
+                                    .font(.subheadline.weight(.semibold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(MZTheme.ink)
+                            }
+                            .frame(minHeight: 38)
+
+                            if index < detailItems.count - 1 {
+                                MZDivider()
+                            }
+                        }
+                    }
+                }
+
+                MZCard(padding: 0) {
+                    VStack(spacing: 0) {
+                        HStack {
+                            Text("最近账目")
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(MZTheme.ink)
+                            Spacer()
+                            Button("查看分类详情") {
+                                onOpenDetail()
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(MZTheme.accent)
+                            .accessibilityIdentifier("home_category_detail_button")
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 16)
+                        .padding(.bottom, 8)
+
+                        if records.isEmpty {
+                            MZEmptyState(title: "暂无来源流水", systemImage: "tray")
+                                .frame(maxWidth: .infinity)
+                                .padding(20)
+                        } else {
+                            ForEach(Array(records.prefix(4).enumerated()), id: \.element.id) { index, record in
+                                MZRecordRow(record: record)
+                                    .padding(.horizontal, 16)
+                                if index < min(records.count, 4) - 1 {
+                                    MZDivider().padding(.horizontal, 16)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .background(MZTheme.card)
+        .accessibilityIdentifier("home_category_bottom_sheet")
+        .onAppear(perform: loadRecords)
+    }
+
+    private var detailItems: [(name: String, amount: Decimal, color: Color)] {
+        Dictionary(grouping: records, by: \.paymentDetailName)
+            .map { name, records in
+                (name, records.reduce(Decimal.zero) { $0 + $1.amount.absoluteValue })
+            }
+            .sorted { $0.1 > $1.1 }
+            .prefix(5)
+            .enumerated()
+            .map { index, item in
+                (item.0, item.1, MZTheme.categoryColors[index % MZTheme.categoryColors.count])
+            }
+    }
+
+    private func loadRecords() {
+        do {
+            records = try store.querySourceRecords(recordIds: category.sourceRecordIds)
+        } catch {
+            store.lastError = error.localizedDescription
+        }
+    }
+}
+
 private struct CategoryDetailView: View {
     @EnvironmentObject private var store: LedgerStore
     let category: CategoryDisplayItem
     let total: Decimal
+    @State private var records: [JournalRecord] = []
 
     var body: some View {
         VStack(spacing: 0) {
             MZBackHeader(title: category.name)
             MZPage {
-                MZCard {
-                    Text(category.name)
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(MZTheme.ink)
+                VStack(spacing: 4) {
+                    Text(store.accountMonth.displayMonth)
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
                     Text(category.amount.moneyText)
-                        .font(.largeTitle.weight(.bold))
+                        .font(.system(size: 52, weight: .bold, design: .default))
                         .monospacedDigit()
                         .foregroundStyle(MZTheme.ink)
-                    Text("占比 \(category.percentText(of: total))")
-                        .font(.subheadline)
+                        .minimumScaleFactor(0.64)
+                        .lineLimit(1)
+                    Text("单位：元")
+                        .font(.footnote)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+
+                MZCard {
+                    Text("近 6 个月趋势")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                    CategoryTrendShell(color: category.color)
+                    Text("跨账月趋势暂按 v5.1 视觉占位，接入历史统计后展示真实曲线。")
+                        .font(.footnote)
                         .foregroundStyle(MZTheme.secondaryInk)
                 }
 
-                MZCard {
-                    Text("最近账目")
+                MZCard(spacing: 0) {
+                    Text("当期明细结构")
                         .font(.headline.weight(.bold))
                         .foregroundStyle(MZTheme.ink)
+                        .padding(.bottom, 8)
+                    if detailItems.isEmpty {
+                        MZEmptyState(title: "暂无明细", systemImage: "chart.pie")
+                    } else {
+                        ForEach(Array(detailItems.enumerated()), id: \.offset) { index, item in
+                            HStack(spacing: 12) {
+                                Circle()
+                                    .fill(item.color)
+                                    .frame(width: 8, height: 8)
+                                Text(item.name)
+                                    .font(.subheadline)
+                                    .foregroundStyle(MZTheme.ink)
+                                ProgressView(value: item.amount.doubleValue, total: max(category.amount.doubleValue, 1))
+                                    .tint(item.color)
+                                Text(item.amount.moneyText)
+                                    .font(.subheadline.weight(.semibold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(MZTheme.ink)
+                                Text(item.amount.percentText(of: category.amount))
+                                    .font(.footnote)
+                                    .foregroundStyle(MZTheme.secondaryInk)
+                                    .frame(width: 52, alignment: .trailing)
+                            }
+                            .frame(minHeight: 42)
+
+                            if index < detailItems.count - 1 {
+                                MZDivider()
+                            }
+                        }
+                    }
+                }
+
+                MZCard(padding: 0) {
+                    VStack(spacing: 0) {
+                        HStack {
+                            Text("最近账目")
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(MZTheme.ink)
+                            Spacer()
+                            Text("全部")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(MZTheme.accent)
+                            Image(systemName: "chevron.right")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(MZTheme.accent)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 16)
+                        .padding(.bottom, 8)
+
+                        if records.isEmpty {
+                            MZEmptyState(title: "暂无来源流水", systemImage: "tray")
+                                .frame(maxWidth: .infinity)
+                                .padding(20)
+                        } else {
+                            ForEach(Array(records.prefix(4).enumerated()), id: \.element.id) { index, record in
+                                MZRecordRow(record: record)
+                                    .padding(.horizontal, 16)
+                                if index < min(records.count, 4) - 1 {
+                                    MZDivider().padding(.horizontal, 16)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                MZCard {
                     NavigationLink {
                         SourceRecordsView(
                             title: "\(category.name) 来源",
@@ -1388,11 +1710,71 @@ private struct CategoryDetailView: View {
                         }
                         .foregroundStyle(MZTheme.accent)
                     }
+                    .accessibilityIdentifier("category_detail_source_records_button")
                 }
             }
         }
         .background(MZTheme.page)
         .navigationBarBackButtonHidden(true)
+        .onAppear(perform: loadRecords)
+    }
+
+    private var detailItems: [(name: String, amount: Decimal, color: Color)] {
+        Dictionary(grouping: records, by: \.paymentDetailName)
+            .map { name, records in
+                (name, records.reduce(Decimal.zero) { $0 + $1.amount.absoluteValue })
+            }
+            .sorted { $0.1 > $1.1 }
+            .prefix(5)
+            .enumerated()
+            .map { index, item in
+                (item.0, item.1, MZTheme.categoryColors[index % MZTheme.categoryColors.count])
+            }
+    }
+
+    private func loadRecords() {
+        do {
+            records = try store.querySourceRecords(recordIds: category.sourceRecordIds)
+        } catch {
+            store.lastError = error.localizedDescription
+        }
+    }
+}
+
+private struct CategoryTrendShell: View {
+    let color: Color
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack(alignment: .bottom, spacing: 18) {
+                ForEach(Array([0.42, 0.48, 0.56, 0.52, 0.64, 0.72].enumerated()), id: \.offset) { index, value in
+                    VStack(spacing: 8) {
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(color.opacity(index == 5 ? 0.9 : 0.45))
+                            .frame(width: 18, height: 110 * value)
+                        Text(["11月", "12月", "1月", "2月", "3月", "4月"][index])
+                            .font(.caption2)
+                            .foregroundStyle(MZTheme.secondaryInk)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .frame(height: 148)
+
+            HStack {
+                ForEach(["明细", "其他", "合计"], id: \.self) { label in
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(label == "合计" ? MZTheme.ink : color.opacity(label == "明细" ? 0.9 : 0.35))
+                            .frame(width: 7, height: 7)
+                        Text(label)
+                            .font(.caption)
+                            .foregroundStyle(MZTheme.secondaryInk)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
     }
 }
 
@@ -2526,6 +2908,7 @@ struct BalanceView: View {
                     } label: {
                         listAmountRow(title: "现金", amount: store.balanceSummary.cashBalance)
                     }
+                    .accessibilityIdentifier("asset_cash_detail_entry")
                     MZDivider()
                     listAmountRow(title: "电子钱包余额", amount: store.balanceSummary.cashBalance, showChevron: false)
                     MZDivider()
@@ -2545,6 +2928,7 @@ struct BalanceView: View {
                                 listAmountRow(title: item.name, amount: item.amount)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("liability_row_\(item.name)")
                             if index < store.balanceSummary.liabilityItems.count - 1 {
                                 MZDivider()
                             }
@@ -2634,48 +3018,148 @@ struct AssetDetailView: View {
     let title: String
     let amount: Decimal
     let sourceRecordIds: [UUID]
+    @State private var records: [JournalRecord] = []
 
     var body: some View {
         VStack(spacing: 0) {
             MZBackHeader(title: title)
             MZPage {
                 MZCard {
+                    Text("当前余额（成本口径）")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                        .frame(maxWidth: .infinity, alignment: .center)
                     Text(amount.moneyText)
-                        .font(.largeTitle.weight(.bold))
+                        .font(.system(size: 50, weight: .bold))
                         .monospacedDigit()
                         .foregroundStyle(MZTheme.ink)
-                    Text("当前余额")
+                        .minimumScaleFactor(0.62)
+                        .lineLimit(1)
+                    Text("较上月变化")
                         .font(.subheadline)
                         .foregroundStyle(MZTheme.secondaryInk)
+                    Text("待接入上月余额后展示")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(MZTheme.ink)
                 }
 
-                MZCard {
-                    SummaryLine(title: "本范围增加", value: "0.00")
-                    MZDivider()
-                    SummaryLine(title: "本范围减少", value: "0.00")
-                }
-
-                MZCard {
-                    NavigationLink {
-                        SourceRecordsView(
-                            title: "\(title) 来源",
-                            filterDescription: "\(store.accountMonth.displayMonth) / \(title)",
-                            recordIds: sourceRecordIds
-                        )
-                    } label: {
-                        MZIconRow(title: "相关流水", subtitle: "查看构成当前余额的来源记录", systemImage: "list.bullet.rectangle", trailing: "\(sourceRecordIds.count) 条")
+                MZCard(spacing: 0) {
+                    HStack {
+                        Text("对象列表")
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(MZTheme.ink)
+                        Spacer()
+                        Text(amount.moneyText)
+                            .font(.headline.weight(.bold))
+                            .monospacedDigit()
+                            .foregroundStyle(MZTheme.accent)
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(MZTheme.accent)
                     }
-                    MZDivider()
+                    .frame(minHeight: 38)
+
+                    if objectItems.isEmpty {
+                        MZDivider()
+                        MZEmptyState(title: "暂无对象拆分", systemImage: "wallet.pass", subtitle: "接入收付手段余额后展示对象列表")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                    } else {
+                        ForEach(Array(objectItems.enumerated()), id: \.offset) { index, item in
+                            MZDivider()
+                            HStack {
+                                Image(systemName: item.icon)
+                                    .font(.headline)
+                                    .foregroundStyle(MZTheme.accent)
+                                    .frame(width: 28, height: 28)
+                                Text(item.name)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(MZTheme.ink)
+                                Spacer()
+                                Text(item.amount.moneyText)
+                                    .font(.subheadline.weight(.semibold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(MZTheme.ink)
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(MZTheme.secondaryInk)
+                            }
+                            .frame(minHeight: 50)
+                            .accessibilityIdentifier("asset_object_row_\(item.name)")
+                        }
+                    }
+                }
+
+                MZCard(padding: 0) {
+                    VStack(spacing: 0) {
+                        HStack {
+                            Text("来源流水（最近4条）")
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(MZTheme.ink)
+                            Spacer()
+                            NavigationLink {
+                                SourceRecordsView(
+                                    title: "\(title) 来源",
+                                    filterDescription: "\(store.accountMonth.displayMonth) / \(title)",
+                                    recordIds: sourceRecordIds
+                                )
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text("查看来源流水")
+                                    Image(systemName: "chevron.right")
+                                }
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(MZTheme.accent)
+                            }
+                            .accessibilityIdentifier("asset_source_records_button")
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 16)
+                        .padding(.bottom, 8)
+
+                        if records.isEmpty {
+                            MZEmptyState(title: "暂无来源流水", systemImage: "tray")
+                                .frame(maxWidth: .infinity)
+                                .padding(20)
+                        } else {
+                            ForEach(Array(records.prefix(4).enumerated()), id: \.element.id) { index, record in
+                                MZRecordRow(record: record)
+                                    .padding(.horizontal, 16)
+                                if index < min(records.count, 4) - 1 {
+                                    MZDivider().padding(.horizontal, 16)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                MZCard {
                     NavigationLink {
                         AdjustBalanceView(title: title, currentAmount: amount)
                     } label: {
                         MZIconRow(title: "调整余额", subtitle: "通过生成流水调整记录修正余额", systemImage: "pencil.line")
                     }
+                    .accessibilityIdentifier("asset_adjust_balance_button")
                 }
             }
         }
         .background(MZTheme.page)
         .navigationBarBackButtonHidden(true)
+        .onAppear(perform: loadRecords)
+    }
+
+    private var objectItems: [(name: String, amount: Decimal, icon: String)] {
+        Dictionary(grouping: records, by: \.paymentMethodName)
+            .map { name, records in
+                (name, records.reduce(Decimal.zero) { $0 + $1.amount }, "wallet.pass")
+            }
+            .sorted { $0.0 < $1.0 }
+    }
+
+    private func loadRecords() {
+        do {
+            records = try store.querySourceRecords(recordIds: sourceRecordIds)
+        } catch {
+            store.lastError = error.localizedDescription
+        }
     }
 }
 
@@ -2714,6 +3198,7 @@ struct AdjustBalanceView: View {
                 }
 
                 MZPrimaryButton(title: "生成调整记录", isDisabled: true) {}
+                    .accessibilityIdentifier("adjust_balance_generate_button")
 
                 MZCard {
                     Text("当前仅完成 v5.1 调整余额页面结构。真实调整需要接入资产调整 Use Case 后启用。")
@@ -3019,62 +3504,128 @@ struct SourceRecordsView: View {
     let title: String
     let filterDescription: String
     let recordIds: [UUID]
+    @State private var keyword = ""
+    @State private var allRecords: [JournalRecord] = []
     @State private var records: [JournalRecord] = []
 
     var body: some View {
         VStack(spacing: 0) {
             MZBackHeader(title: title)
-            MZPage {
-                MZCard {
-                    Text("来源筛选")
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(MZTheme.ink)
-                    Text(filterDescription)
-                        .font(.subheadline)
-                        .foregroundStyle(MZTheme.secondaryInk)
-                    Button("清除筛选") {}
-                        .foregroundStyle(MZTheme.accent)
-                        .disabled(true)
-                }
+            ZStack(alignment: .bottom) {
+                MZPage(bottomInset: 146) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.headline)
+                            .foregroundStyle(MZTheme.tertiaryInk)
+                        TextField("在当前来源中搜索", text: $keyword)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .accessibilityIdentifier("source_records_search_field")
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 48)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(MZTheme.card)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(MZTheme.line, lineWidth: 0.8)
+                    )
 
-                MZCard(padding: 0) {
-                    if records.isEmpty {
-                        MZEmptyState(title: "暂无来源流水", systemImage: "tray")
-                            .frame(maxWidth: .infinity)
-                            .padding(20)
-                    } else {
-                        VStack(spacing: 0) {
-                            ForEach(Array(records.enumerated()), id: \.element.id) { index, record in
-                                NavigationLink {
-                                    if record.isDirectlyEditable {
-                                        JournalFormView(mode: .edit(record))
-                                    } else {
-                                        ReadOnlyRecordDetailView(record: record)
-                                    }
-                                } label: {
-                                    MZRecordRow(record: record)
-                                        .padding(.horizontal, 16)
+                    MZCard {
+                        HStack {
+                            Text("当前筛选")
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(MZTheme.ink)
+                            Spacer()
+                            Button("清除筛选") {}
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(MZTheme.accent)
+                                .disabled(true)
+                        }
+                        ScrollView(.horizontal) {
+                            HStack(spacing: 8) {
+                                MZFilterChip(title: "\(store.accountMonth.displayMonth) ×")
+                                MZFilterChip(title: "来源 ×")
+                                MZFilterChip(title: filterDescription)
+                                if !keyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    MZFilterChip(title: "关键词：\(keyword) ×")
                                 }
-                                .buttonStyle(.plain)
-                                if index < records.count - 1 {
-                                    MZDivider().padding(.horizontal, 16)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                        .scrollIndicators(.hidden)
+                    }
+
+                    MZCard(padding: 0) {
+                        if records.isEmpty {
+                            MZEmptyState(title: "暂无来源流水", systemImage: "tray")
+                                .frame(maxWidth: .infinity)
+                                .padding(20)
+                        } else {
+                            VStack(spacing: 0) {
+                                ForEach(Array(records.enumerated()), id: \.element.id) { index, record in
+                                    NavigationLink {
+                                        if record.isDirectlyEditable {
+                                            JournalFormView(mode: .edit(record))
+                                        } else {
+                                            ReadOnlyRecordDetailView(record: record)
+                                        }
+                                    } label: {
+                                        MZRecordRow(record: record)
+                                            .padding(.horizontal, 16)
+                                    }
+                                    .buttonStyle(.plain)
+                                    if index < records.count - 1 {
+                                        MZDivider().padding(.horizontal, 16)
+                                    }
                                 }
                             }
                         }
                     }
+
+                    Text("共 \(records.count) 条来源记录")
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                        .frame(maxWidth: .infinity, alignment: .center)
                 }
+
+                MZBottomToolBar(items: [
+                    ("搜索", "magnifyingglass"),
+                    ("点击这里记一笔", "pencil"),
+                    ("筛选", "line.3.horizontal.decrease")
+                ])
             }
         }
         .background(MZTheme.page)
         .navigationBarBackButtonHidden(true)
         .onAppear(perform: loadRecords)
+        .onChange(of: keyword) {
+            applyKeyword()
+        }
     }
 
     private func loadRecords() {
         do {
-            records = try store.querySourceRecords(recordIds: recordIds)
+            allRecords = try store.querySourceRecords(recordIds: recordIds)
+            applyKeyword()
         } catch {
             store.lastError = error.localizedDescription
+        }
+    }
+
+    private func applyKeyword() {
+        let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            records = allRecords
+            return
+        }
+        records = allRecords.filter { record in
+            record.paymentMethodName.localizedCaseInsensitiveContains(trimmed)
+                || record.paymentTypeName.localizedCaseInsensitiveContains(trimmed)
+                || record.paymentDetailName.localizedCaseInsensitiveContains(trimmed)
+                || (record.note?.localizedCaseInsensitiveContains(trimmed) ?? false)
         }
     }
 }
@@ -3133,6 +3684,7 @@ struct StatisticsView: View {
                             }
                             .foregroundStyle(MZTheme.accent)
                         }
+                        .accessibilityIdentifier("statistics_balance_change_detail")
                     }
                     .frame(minHeight: 36)
                     SummaryLine(title: "资产增加", value: store.balanceSummary.cashBalance.moneyText)
@@ -3158,6 +3710,7 @@ struct StatisticsView: View {
                             }
                             .foregroundStyle(MZTheme.accent)
                         }
+                        .accessibilityIdentifier("statistics_investment_result_detail")
                     }
                     .frame(minHeight: 36)
                     SummaryLine(title: "已实现收益", value: store.investmentMonthlySummary.realizedGain.moneyText)
@@ -3305,6 +3858,7 @@ struct InvestmentResultDetailView: View {
                                     .padding(.horizontal, 16)
                                 }
                                 .buttonStyle(.plain)
+                                .accessibilityIdentifier("instrument_result_row_\(holding.fundName)")
                                 if index < store.investmentHoldings.count - 1 {
                                     MZDivider().padding(.horizontal, 16)
                                 }
@@ -3350,6 +3904,7 @@ struct InstrumentResultDetailView: View {
                     } label: {
                         MZIconRow(title: "查看投资明细账", subtitle: "交易、成本、回填流水", systemImage: "list.bullet.rectangle")
                     }
+                    .accessibilityIdentifier("instrument_result_ledger_button")
                 }
             }
         }
@@ -3792,6 +4347,11 @@ private extension Decimal {
 
     var doubleValue: Double {
         NSDecimalNumber(decimal: self).doubleValue
+    }
+
+    func percentText(of total: Decimal) -> String {
+        guard total.doubleValue != 0 else { return "0.0%" }
+        return String(format: "%.1f%%", doubleValue / total.doubleValue * 100)
     }
 }
 

@@ -186,6 +186,19 @@ final class ImportMemoryUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["最近账目"].exists)
         captureV51Screenshot("01-首页")
 
+        tapVisibleButton(identifier: "structure_item_生活必要开支")
+        XCTAssertTrue(app.staticTexts["二级明细"].waitForExistence(timeout: 5))
+        captureV51Screenshot("17-首页-分类底部抽屉")
+        tapVisibleButton(identifier: "home_category_detail_button")
+        XCTAssertTrue(app.staticTexts["近 6 个月趋势"].waitForExistence(timeout: 5))
+        captureV51Screenshot("18-首页-分类详情")
+        tapVisibleButton(identifier: "category_detail_source_records_button")
+        XCTAssertTrue(app.staticTexts["当前筛选"].waitForExistence(timeout: 5))
+        captureV51Screenshot("19-来源流水筛选态")
+        tapBackButton()
+        tapBackButton()
+        XCTAssertTrue(app.staticTexts["收支摘要"].waitForExistence(timeout: 5))
+
         XCTAssertTrue(app.buttons["btn_home_quick_add"].exists)
         app.buttons["btn_home_quick_add"].tap()
         XCTAssertTrue(app.buttons["记一笔"].waitForExistence(timeout: 3))
@@ -242,11 +255,41 @@ final class ImportMemoryUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["净资产"].exists)
         captureV51Screenshot("05-资产负债")
 
+        tapVisibleButton(identifier: "asset_cash_detail_entry")
+        XCTAssertTrue(app.staticTexts["当前余额（成本口径）"].waitForExistence(timeout: 5))
+        captureV51Screenshot("22-资产详情")
+        tapVisibleButton(identifier: "asset_adjust_balance_button")
+        XCTAssertTrue(app.staticTexts["调整余额"].waitForExistence(timeout: 5))
+        captureV51Screenshot("23-调整余额")
+        tapBackButton()
+        tapBackButton()
+        XCTAssertTrue(app.staticTexts["资产合计"].waitForExistence(timeout: 5))
+
+        let liabilityRow = app.buttons["liability_row_广发卡"].firstMatch
+        if liabilityRow.waitForExistence(timeout: 3) {
+            liabilityRow.tap()
+            XCTAssertTrue(app.staticTexts["剩余负债"].waitForExistence(timeout: 5))
+            captureV51Screenshot("24-负债详情")
+            tapBackButton()
+        }
+
         app.waitForMingZhangTab("统计").tap()
         XCTAssertTrue(app.staticTexts["结果总览"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["资产负债变化"].exists)
         XCTAssertTrue(app.staticTexts["投资结果"].exists)
         captureV51Screenshot("06-统计")
+
+        tapVisibleButton(identifier: "structure_item_生活必要开支")
+        XCTAssertTrue(app.staticTexts["近 6 个月趋势"].waitForExistence(timeout: 5))
+        captureV51Screenshot("25-统计-收支分类详情")
+        tapBackButton()
+        XCTAssertTrue(app.staticTexts["结果总览"].waitForExistence(timeout: 5))
+
+        tapVisibleButton(identifier: "statistics_balance_change_detail")
+        XCTAssertTrue(app.staticTexts["资产负债变化"].waitForExistence(timeout: 5))
+        captureV51Screenshot("26-统计-资产负债变化详情")
+        tapBackButton()
+        XCTAssertTrue(app.staticTexts["结果总览"].waitForExistence(timeout: 5))
 
         app.waitForMingZhangTab("设置").tap()
         XCTAssertTrue(app.staticTexts["记账配置"].waitForExistence(timeout: 5))
@@ -323,6 +366,13 @@ final class ImportMemoryUITests: XCTestCase {
         navigateToImport(source: "alipay")
         assertClassificationDisplayed(type: "生活必要开支", detail: "伙食费")
         captureV51Screenshot("08-导入整理")
+
+        XCTAssertTrue(app.buttons["import-select-all-btn"].waitForExistence(timeout: 5))
+        app.buttons["import-select-all-btn"].tap()
+        XCTAssertTrue(app.buttons["import-batch-edit-btn"].waitForExistence(timeout: 5))
+        app.buttons["import-batch-edit-btn"].tap()
+        XCTAssertTrue(app.staticTexts["批量修改"].waitForExistence(timeout: 5))
+        captureV51Screenshot("20-导入候选批量修改")
     }
 
     // MARK: - TC-002: 同商户不同商品
@@ -465,8 +515,39 @@ final class InvestmentLedgerUITests: XCTestCase {
         try? screenshot.pngRepresentation.write(to: outputURL)
     }
 
+    func tapBackButton() {
+        let backButton = app.buttons["返回"].firstMatch
+        if backButton.waitForExistence(timeout: 3) {
+            backButton.tap()
+        } else if app.navigationBars.buttons.firstMatch.exists {
+            app.navigationBars.buttons.firstMatch.tap()
+        }
+    }
+
+    func tapVisibleButton(identifier: String, timeout: TimeInterval = 5) {
+        let button = app.buttons[identifier].firstMatch
+        XCTAssertTrue(button.waitForExistence(timeout: timeout), "应存在按钮 \(identifier)")
+        if !button.isHittable {
+            app.swipeUp()
+        }
+        button.tap()
+    }
+
     func testInvestmentLedgerShowsInvestmentAssetEntryAndFundRow() {
         app.launch()
+
+        XCTAssertTrue(app.waitForMingZhangTab("统计").exists)
+        app.waitForMingZhangTab("统计").tap()
+        XCTAssertTrue(app.staticTexts["结果总览"].waitForExistence(timeout: 10))
+        tapVisibleButton(identifier: "statistics_investment_result_detail")
+        XCTAssertTrue(app.staticTexts["投资结果"].waitForExistence(timeout: 10))
+        captureV51Screenshot("27-统计-投资结果详情")
+
+        tapVisibleButton(identifier: "instrument_result_row_沪深300指数A", timeout: 10)
+        XCTAssertTrue(app.staticTexts["沪深300指数A"].waitForExistence(timeout: 10))
+        captureV51Screenshot("28-统计-标的结果详情")
+        tapBackButton()
+        tapBackButton()
 
         XCTAssertTrue(app.waitForMingZhangTab("资产负债").exists)
         app.waitForMingZhangTab("资产负债").tap()
@@ -481,5 +562,12 @@ final class InvestmentLedgerUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["基金投资明细账"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["investment_ledger_fund_name"].waitForExistence(timeout: 5))
         captureV51Screenshot("16-基金投资明细账")
+
+        let feedRow = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "investment_feed_row_")).firstMatch
+        if feedRow.waitForExistence(timeout: 5) {
+            feedRow.tap()
+            XCTAssertTrue(app.staticTexts["记录详情"].waitForExistence(timeout: 5))
+            captureV51Screenshot("21-只读记录详情")
+        }
     }
 }
