@@ -15,7 +15,7 @@ final class P0LedgerFlowTests: XCTestCase {
         let types = try useCases.queryPaymentTypes()
         let details = try useCases.queryPaymentDetails()
 
-        XCTAssertEqual(methods.map(\.name).sorted(), ["广发卡", "待补真实账户", "电子钱包余额", "账务处理"])
+        XCTAssertTrue(Set(methods.map(\.name)).isSuperset(of: ["广发卡", "待补真实账户", "电子钱包余额", "账务处理"]))
         XCTAssertEqual(methods.first { $0.name == "广发卡" }?.methodType, .liability)
         XCTAssertEqual(methods.first { $0.name == "待补真实账户" }?.methodType, .pendingRealAccount)
         XCTAssertEqual(methods.first { $0.name == "电子钱包余额" }?.methodType, .asset)

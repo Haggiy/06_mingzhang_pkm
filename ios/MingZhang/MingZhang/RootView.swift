@@ -281,6 +281,7 @@ private struct MZBackHeader: View {
     var trailingSystemImage: String?
     var trailingTitle: String?
     var trailingTint: Color = MZTheme.accent
+    var trailingAccessibilityIdentifier: String?
     var trailingAction: (() -> Void)?
 
     var body: some View {
@@ -310,6 +311,7 @@ private struct MZBackHeader: View {
                         .foregroundStyle(trailingTint)
                         .frame(width: 44, height: 44, alignment: .trailing)
                 }
+                .accessibilityIdentifier(trailingAccessibilityIdentifier ?? trailingTitle)
             } else if let trailingSystemImage {
                 Button {
                     trailingAction?()
@@ -319,6 +321,7 @@ private struct MZBackHeader: View {
                         .foregroundStyle(trailingTint)
                         .frame(width: 44, height: 44, alignment: .trailing)
                 }
+                .accessibilityIdentifier(trailingAccessibilityIdentifier ?? trailingSystemImage)
             } else {
                 Color.clear.frame(width: 44, height: 44)
             }
@@ -1975,7 +1978,7 @@ struct JournalFilterView: View {
                         }
                     }
                     MZDivider()
-                    MZMenuRow(title: "收付手段", selection: $input.paymentMethodName, options: [""] + store.methods.map(\.name), placeholder: "全部收付手段")
+                    MZMenuRow(title: "收付手段", selection: $input.paymentMethodName, options: [""] + store.userVisibleMethods.map(\.name), placeholder: "全部收付手段")
                     MZDivider()
                     MZMenuRow(title: "收付类型", selection: $input.paymentTypeName, options: [""] + store.types.map(\.name), placeholder: "全部收付类型")
                     MZDivider()
@@ -2483,7 +2486,7 @@ struct ImportCandidateEditView: View {
                     MZDivider()
                     MZMenuRow(title: "收付手段", required: true, selection: $paymentMethodName, options: paymentMethodOptions)
                     MZDivider()
-                    MZMenuRow(title: "收付类型", required: true, selection: $paymentTypeName, options: [""] + store.types.map(\.name))
+                    MZMenuRow(title: "收付类型", required: true, selection: $paymentTypeName, options: [""] + activeTypeOptions)
                         .accessibilityIdentifier("candidate-edit-type-picker")
                     MZDivider()
                     MZMenuRow(title: "类型明细", required: true, selection: $paymentDetailName, options: [""] + availableDetails.map(\.name))
@@ -2526,7 +2529,7 @@ struct ImportCandidateEditView: View {
     }
 
     private var paymentMethodOptions: [String] {
-        var names = store.methods.map(\.name)
+        var names = store.activePaymentMethods.map(\.name)
         if !paymentMethodName.isEmpty, !names.contains(paymentMethodName) {
             names.insert(paymentMethodName, at: 0)
         }
@@ -2537,7 +2540,20 @@ struct ImportCandidateEditView: View {
         guard let typeId = store.types.first(where: { $0.name == paymentTypeName })?.id else {
             return []
         }
-        return store.details.filter { $0.paymentTypeId == typeId }
+        let active = store.activePaymentDetails.filter { $0.paymentTypeId == typeId }
+        if let current = store.details.first(where: { $0.name == paymentDetailName && $0.paymentTypeId == typeId }),
+           !active.contains(where: { $0.id == current.id }) {
+            return active + [current]
+        }
+        return active
+    }
+
+    private var activeTypeOptions: [String] {
+        var names = store.activePaymentTypes.map(\.name)
+        if !paymentTypeName.isEmpty, !names.contains(paymentTypeName) {
+            names.append(paymentTypeName)
+        }
+        return names
     }
 
     private func makeChanges() throws -> ImportCandidateChanges {
@@ -2548,7 +2564,7 @@ struct ImportCandidateEditView: View {
         return ImportCandidateChanges(
             accountMonth: accountMonth,
             amount: amount,
-            paymentMethodName: paymentMethodName,
+            paymentMethodName: paymentMethodName == (candidate.paymentMethodName ?? "待补真实账户") ? nil : paymentMethodName,
             paymentTypeName: paymentTypeName.isEmpty ? nil : paymentTypeName,
             paymentDetailName: paymentDetailName.isEmpty ? nil : paymentDetailName,
             note: note
@@ -2576,9 +2592,9 @@ struct ImportBatchEditView: View {
                                 .textInputAutocapitalization(.never)
                         }
                         MZDivider()
-                        MZMenuRow(title: "收付手段", selection: $paymentMethodName, options: [""] + store.methods.map(\.name))
+                        MZMenuRow(title: "收付手段", selection: $paymentMethodName, options: [""] + store.activePaymentMethods.map(\.name))
                         MZDivider()
-                        MZMenuRow(title: "收付类型", selection: $paymentTypeName, options: [""] + store.types.map(\.name))
+                        MZMenuRow(title: "收付类型", selection: $paymentTypeName, options: [""] + store.activePaymentTypes.map(\.name))
                         MZDivider()
                         MZMenuRow(title: "类型明细", selection: $paymentDetailName, options: [""] + availableDetails.map(\.name))
                     }
@@ -2604,7 +2620,7 @@ struct ImportBatchEditView: View {
         guard let typeId = store.types.first(where: { $0.name == paymentTypeName })?.id else {
             return []
         }
-        return store.details.filter { $0.paymentTypeId == typeId }
+        return store.activePaymentDetails.filter { $0.paymentTypeId == typeId }
     }
 
     private var changes: ImportCandidateChanges {
@@ -2657,7 +2673,7 @@ struct JournalFormView: View {
                             .accessibilityIdentifier("picker_occurred_at")
                     }
                     MZDivider()
-                    MZMenuRow(title: "收付手段", required: true, selection: $input.paymentMethodName, options: store.methods.map(\.name))
+                    MZMenuRow(title: "收付手段", required: true, selection: $input.paymentMethodName, options: paymentMethodOptions)
                         .accessibilityIdentifier("picker_payment_method")
                     MZDivider()
                     MZFieldRow(title: "金额", required: true) {
@@ -2666,7 +2682,7 @@ struct JournalFormView: View {
                             .accessibilityIdentifier("field_amount")
                     }
                     MZDivider()
-                    MZMenuRow(title: "收付类型", required: true, selection: $input.paymentTypeName, options: store.types.map(\.name))
+                    MZMenuRow(title: "收付类型", required: true, selection: $input.paymentTypeName, options: paymentTypeOptions)
                         .accessibilityIdentifier("picker_payment_type")
                     MZDivider()
                     MZMenuRow(title: "类型明细", required: true, selection: $input.paymentDetailName, options: availableDetails.map(\.name))
@@ -2731,7 +2747,7 @@ struct JournalFormView: View {
             Text("删除后会重新计算当前账月结果。")
         }
         .onAppear {
-            normalizeDetailSelection()
+            normalizeConfigSelection()
         }
         .onChange(of: input.paymentTypeName) {
             normalizeDetailSelection()
@@ -2783,11 +2799,44 @@ struct JournalFormView: View {
         }
     }
 
+    private var paymentMethodOptions: [String] {
+        var names = store.activePaymentMethods.map(\.name)
+        if !input.paymentMethodName.isEmpty, !names.contains(input.paymentMethodName) {
+            names.append(input.paymentMethodName)
+        }
+        return names
+    }
+
+    private var paymentTypeOptions: [String] {
+        var names = store.activePaymentTypes.map(\.name)
+        if !input.paymentTypeName.isEmpty, !names.contains(input.paymentTypeName) {
+            names.append(input.paymentTypeName)
+        }
+        return names
+    }
+
     private var availableDetails: [PaymentDetail] {
         guard let typeId = store.types.first(where: { $0.name == input.paymentTypeName })?.id else {
-            return store.details
+            return store.activePaymentDetails
         }
-        return store.details.filter { $0.paymentTypeId == typeId }
+        let active = store.activePaymentDetails.filter { $0.paymentTypeId == typeId }
+        if let current = store.details.first(where: { $0.name == input.paymentDetailName && $0.paymentTypeId == typeId }),
+           !active.contains(where: { $0.id == current.id }) {
+            return active + [current]
+        }
+        return active
+    }
+
+    private func normalizeConfigSelection() {
+        if case .create = mode {
+            if !store.activePaymentMethods.contains(where: { $0.name == input.paymentMethodName }) {
+                input.paymentMethodName = store.activePaymentMethods.first?.name ?? input.paymentMethodName
+            }
+            if !store.activePaymentTypes.contains(where: { $0.name == input.paymentTypeName }) {
+                input.paymentTypeName = store.activePaymentTypes.first?.name ?? input.paymentTypeName
+            }
+        }
+        normalizeDetailSelection()
     }
 
     private func normalizeDetailSelection() {
@@ -4008,44 +4057,56 @@ struct SettingsView: View {
 
 struct PaymentMethodsSettingsView: View {
     @EnvironmentObject private var store: LedgerStore
+    @State private var createType: PaymentMethodType?
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            VStack(spacing: 0) {
-                MZBackHeader(title: "收付手段管理", trailingSystemImage: "plus")
-                MZPage(bottomInset: 96) {
-                    ForEach(PaymentMethodType.visibleOrder, id: \.self) { type in
-                        MZCard(spacing: 0) {
-                            Text(type.displayName)
-                                .font(.headline.weight(.bold))
-                                .foregroundStyle(MZTheme.ink)
-                                .padding(.bottom, 6)
-                            let methods = store.methods.filter { $0.methodType == type }
-                            if methods.isEmpty {
-                                MZEmptyState(title: "暂无\(type.displayName)", systemImage: "wallet.pass")
-                                    .frame(maxWidth: .infinity)
-                            } else {
-                                ForEach(Array(methods.enumerated()), id: \.element.id) { index, method in
+        VStack(spacing: 0) {
+            MZBackHeader(title: "收付手段管理")
+            MZPage {
+                ForEach(PaymentMethodType.visibleOrder, id: \.self) { type in
+                    MZCard(spacing: 0) {
+                        Text(type.displayName)
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(MZTheme.ink)
+                            .padding(.bottom, 6)
+                        let methods = store.userVisibleMethods.filter { $0.methodType == type }
+                        if methods.isEmpty {
+                            MZEmptyState(title: "暂无\(type.displayName)", systemImage: "wallet.pass")
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            ForEach(Array(methods.enumerated()), id: \.element.id) { index, method in
+                                NavigationLink {
+                                    PaymentMethodEditView(method: method, initialType: type)
+                                } label: {
                                     paymentMethodRow(method)
-                                    if index < methods.count - 1 {
-                                        MZDivider()
-                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("payment_method_row_\(method.name)")
+                                if index < methods.count - 1 {
+                                    MZDivider()
                                 }
                             }
                             MZDivider()
+                        }
+                        Button {
+                            createType = type
+                        } label: {
                             addMethodRow(type)
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("payment_method_add_\(type.rawValue)")
                     }
                 }
             }
-            MZBottomToolBar(items: [
-                ("编辑", "pencil"),
-                ("停用", "pause.circle"),
-                ("排序", "arrow.up.arrow.down")
-            ])
         }
         .background(MZTheme.page)
         .navigationBarBackButtonHidden(true)
+        .sheet(item: $createType) { type in
+            NavigationStack {
+                PaymentMethodEditView(method: nil, initialType: type)
+                    .environmentObject(store)
+            }
+        }
     }
 
     private func paymentMethodRow(_ method: PaymentMethod) -> some View {
@@ -4085,10 +4146,14 @@ struct PaymentMethodsSettingsView: View {
 
 struct PaymentTypesSettingsView: View {
     @EnvironmentObject private var store: LedgerStore
+    @State private var isShowingCreateType = false
+    @State private var createDetailType: PaymentType?
 
     var body: some View {
         VStack(spacing: 0) {
-            MZBackHeader(title: "收付类型与明细", trailingSystemImage: "plus")
+            MZBackHeader(title: "收付类型与明细", trailingSystemImage: "plus", trailingAccessibilityIdentifier: "payment_type_add", trailingAction: {
+                isShowingCreateType = true
+            })
             MZPage {
                 Text("会计要素 → 收付类型 → 类型明细")
                     .font(.caption)
@@ -4107,7 +4172,13 @@ struct PaymentTypesSettingsView: View {
                                 .frame(minHeight: 36)
                         } else {
                             ForEach(Array(types.enumerated()), id: \.element.id) { _, type in
-                                typeTreeTypeRow(type)
+                                NavigationLink {
+                                    PaymentTypeEditView(type: type)
+                                } label: {
+                                    typeTreeTypeRow(type)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("payment_type_row_\(type.name)")
                                 let details = store.details.filter { $0.paymentTypeId == type.id }
                                 ForEach(details) { detail in
                                     NavigationLink {
@@ -4118,6 +4189,13 @@ struct PaymentTypesSettingsView: View {
                                     .buttonStyle(.plain)
                                     .accessibilityIdentifier("payment_detail_row_\(detail.name)")
                                 }
+                                Button {
+                                    createDetailType = type
+                                } label: {
+                                    addDetailRow(type)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("payment_detail_add_\(type.name)")
                             }
                         }
                         if elementIndex < AccountingElement.visibleOrder.count - 1 {
@@ -4129,6 +4207,18 @@ struct PaymentTypesSettingsView: View {
         }
         .background(MZTheme.page)
         .navigationBarBackButtonHidden(true)
+        .sheet(isPresented: $isShowingCreateType) {
+            NavigationStack {
+                PaymentTypeEditView(type: nil)
+                    .environmentObject(store)
+            }
+        }
+        .sheet(item: $createDetailType) { type in
+            NavigationStack {
+                TypeDetailEditView(type: type, detail: nil)
+                    .environmentObject(store)
+            }
+        }
     }
 
     private func typeTreeElementRow(_ element: AccountingElement) -> some View {
@@ -4155,11 +4245,14 @@ struct PaymentTypesSettingsView: View {
                 .font(.caption.weight(.bold))
             Text(type.name)
                 .font(.subheadline.weight(.semibold))
+                .foregroundStyle(type.isActive ? MZTheme.ink : MZTheme.tertiaryInk)
             Spacer()
-            Image(systemName: "ellipsis")
+            Text(type.isActive ? "启用" : "停用")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(type.isActive ? MZTheme.secondaryInk : MZTheme.tertiaryInk)
+            Image(systemName: "chevron.right")
                 .font(.headline.weight(.bold))
         }
-        .foregroundStyle(MZTheme.ink)
         .frame(minHeight: 40)
     }
 
@@ -4181,34 +4274,227 @@ struct PaymentTypesSettingsView: View {
         .frame(minHeight: 38)
         .contentShape(Rectangle())
     }
+
+    private func addDetailRow(_ type: PaymentType) -> some View {
+        HStack(spacing: 10) {
+            Color.clear.frame(width: 34)
+            Rectangle()
+                .fill(MZTheme.line)
+                .frame(width: 1, height: 38)
+            Image(systemName: "plus")
+                .font(.caption.weight(.bold))
+            Text("新增\(type.name)明细")
+                .font(.subheadline.weight(.semibold))
+            Spacer()
+        }
+        .foregroundStyle(MZTheme.accent)
+        .frame(minHeight: 38)
+        .contentShape(Rectangle())
+    }
 }
 
-struct TypeDetailEditView: View {
-    let type: PaymentType
-    let detail: PaymentDetail
+struct PaymentMethodEditView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
+    let method: PaymentMethod?
+    @State private var name: String
+    @State private var methodTypeName: String
+    @State private var semanticTagsText: String
+
+    init(method: PaymentMethod?, initialType: PaymentMethodType) {
+        self.method = method
+        _name = State(initialValue: method?.name ?? "")
+        _methodTypeName = State(initialValue: (method?.methodType ?? initialType).displayName)
+        _semanticTagsText = State(initialValue: (method?.semanticTags ?? initialType.defaultSemanticTags).joined(separator: "，"))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            MZBackHeader(title: "类型明细编辑", trailingTitle: "保存")
+            MZBackHeader(title: method == nil ? "新增收付手段" : "编辑收付手段", trailingTitle: "保存", trailingAccessibilityIdentifier: "payment_method_save", trailingAction: save)
             MZPage {
                 MZCard(spacing: 0) {
-                    SummaryLine(title: "名称", value: detail.name)
+                    MZFieldRow(title: "名称", required: true) {
+                        TextField("收付手段名称", text: $name)
+                            .accessibilityIdentifier("payment_method_name_field")
+                    }
                     MZDivider()
-                    SummaryLine(title: "所属收付类型", value: type.name)
+                    MZMenuRow(title: "属性", required: true, selection: $methodTypeName, options: PaymentMethodType.visibleOrder.map(\.displayName))
+                        .accessibilityIdentifier("payment_method_type_picker")
+                    MZDivider()
+                    MZFieldRow(title: "状态") {
+                        Text(method?.isActive == false ? "停用" : "启用")
+                            .foregroundStyle(method?.isActive == false ? MZTheme.tertiaryInk : MZTheme.ink)
+                    }
+                }
+
+                MZCard {
+                    Text("语义标签")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                    TextField("多个标签用逗号分隔", text: $semanticTagsText)
+                        .textInputAutocapitalization(.never)
+                        .accessibilityIdentifier("payment_method_semantic_tags_field")
+                }
+
+                if let method, method.isActive {
+                    MZLightButton(title: "停用此收付手段", systemImage: "pause.circle") {
+                        if store.disablePaymentMethod(id: method.id) {
+                            dismiss()
+                        }
+                    }
+                    .accessibilityIdentifier("payment_method_disable")
+                }
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+    }
+
+    private func save() {
+        guard let selectedType = PaymentMethodType.visibleOrder.first(where: { $0.displayName == methodTypeName }) else { return }
+        let tags = parseSemanticTags(semanticTagsText)
+        let ok: Bool
+        if let method {
+            ok = store.updatePaymentMethod(id: method.id, input: UpdatePaymentMethodInput(name: name, methodType: selectedType, semanticTags: tags))
+        } else {
+            ok = store.createPaymentMethod(input: CreatePaymentMethodInput(name: name, methodType: selectedType, semanticTags: tags))
+        }
+        if ok {
+            dismiss()
+        }
+    }
+}
+
+struct PaymentTypeEditView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
+    let type: PaymentType?
+    @State private var name: String
+    @State private var elementName: String
+    @State private var semanticTagsText: String
+    @State private var configDescription: String
+
+    init(type: PaymentType?) {
+        self.type = type
+        _name = State(initialValue: type?.name ?? "")
+        _elementName = State(initialValue: (type?.element ?? .expense).displayName)
+        _semanticTagsText = State(initialValue: (type?.semanticTags ?? [AccountingElement.expense.defaultSemanticTag]).joined(separator: "，"))
+        _configDescription = State(initialValue: type?.configDescription ?? "")
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: type == nil ? "新增收付类型" : "编辑收付类型", trailingTitle: "保存", trailingAccessibilityIdentifier: "payment_type_save", trailingAction: save)
+            MZPage {
+                MZCard(spacing: 0) {
+                    MZFieldRow(title: "名称", required: true) {
+                        TextField("收付类型名称", text: $name)
+                            .accessibilityIdentifier("payment_type_name_field")
+                    }
+                    MZDivider()
+                    MZMenuRow(title: "会计要素", required: true, selection: $elementName, options: AccountingElement.visibleOrder.map(\.displayName))
+                        .accessibilityIdentifier("payment_type_element_picker")
+                    MZDivider()
+                    MZFieldRow(title: "状态") {
+                        Text(type?.isActive == false ? "停用" : "启用")
+                            .foregroundStyle(type?.isActive == false ? MZTheme.tertiaryInk : MZTheme.ink)
+                    }
+                }
+
+                MZCard {
+                    Text("语义标签")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                    TextField("多个标签用逗号分隔", text: $semanticTagsText)
+                        .textInputAutocapitalization(.never)
+                        .accessibilityIdentifier("payment_type_semantic_tags_field")
+                    TextField("语义描述", text: $configDescription, axis: .vertical)
+                        .lineLimit(2...4)
+                        .accessibilityIdentifier("payment_type_description_field")
+                }
+
+                if let type, type.isActive {
+                    MZLightButton(title: "停用此收付类型", systemImage: "pause.circle") {
+                        if store.disablePaymentType(id: type.id) {
+                            dismiss()
+                        }
+                    }
+                    .accessibilityIdentifier("payment_type_disable")
+                }
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+    }
+
+    private func save() {
+        guard let element = AccountingElement.visibleOrder.first(where: { $0.displayName == elementName }) else { return }
+        let tags = parseSemanticTags(semanticTagsText)
+        let ok: Bool
+        if let type {
+            ok = store.updatePaymentType(
+                id: type.id,
+                input: UpdatePaymentTypeInput(name: name, element: element, semanticTags: tags, configDescription: configDescription)
+            )
+        } else {
+            ok = store.createPaymentType(
+                input: CreatePaymentTypeInput(name: name, element: element, semanticTags: tags, configDescription: configDescription)
+            )
+        }
+        if ok {
+            dismiss()
+        }
+    }
+}
+
+struct TypeDetailEditView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
+    let type: PaymentType
+    let detail: PaymentDetail?
+    @State private var name: String
+    @State private var paymentTypeName: String
+    @State private var semanticTagsText: String
+    @State private var configDescription: String
+
+    init(type: PaymentType, detail: PaymentDetail?) {
+        self.type = type
+        self.detail = detail
+        _name = State(initialValue: detail?.name ?? "")
+        _paymentTypeName = State(initialValue: type.name)
+        _semanticTagsText = State(initialValue: (detail?.semanticTags ?? []).joined(separator: "，"))
+        _configDescription = State(initialValue: detail?.configDescription ?? "")
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: detail == nil ? "新增类型明细" : "类型明细编辑", trailingTitle: "保存", trailingAccessibilityIdentifier: "payment_detail_save", trailingAction: save)
+            MZPage {
+                MZCard(spacing: 0) {
+                    MZFieldRow(title: "名称", required: true) {
+                        TextField("类型明细名称", text: $name)
+                            .accessibilityIdentifier("payment_detail_name_field")
+                    }
+                    MZDivider()
+                    MZMenuRow(title: "所属类型", required: true, selection: $paymentTypeName, options: paymentTypeOptions)
+                        .accessibilityIdentifier("payment_detail_type_picker")
                     MZDivider()
                     SummaryLine(title: "层级", value: "类型明细")
                     MZDivider()
-                    SummaryLine(title: "状态", value: detail.isActive ? "启用" : "停用")
+                    SummaryLine(title: "状态", value: detail?.isActive == false ? "停用" : "启用")
                 }
 
                 MZCard {
                     Text("语义描述（自然语言）")
                         .font(.headline.weight(.bold))
                         .foregroundStyle(MZTheme.ink)
-                    Text("日常\(detail.name)相关消费，计入\(type.name)。")
-                        .font(.subheadline)
-                        .foregroundStyle(MZTheme.secondaryInk)
-                    Text("18/200")
+                    TextField("语义描述", text: $configDescription, axis: .vertical)
+                        .lineLimit(2...4)
+                        .accessibilityIdentifier("payment_detail_description_field")
+                    TextField("语义标签，多个标签用逗号分隔", text: $semanticTagsText)
+                        .textInputAutocapitalization(.never)
+                        .accessibilityIdentifier("payment_detail_semantic_tags_field")
+                    Text("\(configDescription.count)/200")
                         .font(.caption)
                         .foregroundStyle(MZTheme.secondaryInk)
                         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -4216,13 +4502,70 @@ struct TypeDetailEditView: View {
 
                 MZInfoCallout(text: "语义描述用于帮助理解类型明细含义，不是自动规则中心。")
 
-                MZLightButton(title: "停用此类型明细", systemImage: "pause.circle") {}
-                    .disabled(true)
+                if let detail, detail.isActive {
+                    MZLightButton(title: "停用此类型明细", systemImage: "pause.circle") {
+                        if store.disablePaymentDetail(id: detail.id) {
+                            dismiss()
+                        }
+                    }
+                    .accessibilityIdentifier("payment_detail_disable")
+                }
             }
         }
         .background(MZTheme.page)
         .navigationBarBackButtonHidden(true)
     }
+
+    private var paymentTypeOptions: [String] {
+        var names = store.activePaymentTypes.map(\.name)
+        if !names.contains(paymentTypeName) {
+            names.append(paymentTypeName)
+        }
+        return names
+    }
+
+    private func save() {
+        guard let selectedType = store.types.first(where: { $0.name == paymentTypeName }) else { return }
+        let tags = parseSemanticTags(semanticTagsText)
+        let ok: Bool
+        if let detail {
+            ok = store.updatePaymentDetail(
+                id: detail.id,
+                input: UpdatePaymentDetailInput(
+                    name: name,
+                    paymentTypeId: selectedType.id,
+                    semanticTags: tags,
+                    configDescription: configDescription
+                )
+            )
+        } else {
+            ok = store.createPaymentDetail(
+                input: CreatePaymentDetailInput(
+                    name: name,
+                    paymentTypeId: selectedType.id,
+                    semanticTags: tags,
+                    configDescription: configDescription
+                )
+            )
+        }
+        if ok {
+            dismiss()
+        }
+    }
+}
+
+private func parseSemanticTags(_ value: String) -> [String] {
+    var seen: Set<String> = []
+    var tags: [String] = []
+    for raw in value
+        .replacingOccurrences(of: "，", with: ",")
+        .split(separator: ",", omittingEmptySubsequences: true) {
+        let tag = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tag.isEmpty, !seen.contains(tag) else { continue }
+        seen.insert(tag)
+        tags.append(tag)
+    }
+    return tags
 }
 
 struct DataManagementPlaceholderView: View {
@@ -4527,8 +4870,12 @@ private extension ImportIssueCode {
     }
 }
 
+extension PaymentMethodType: @retroactive Identifiable {
+    public var id: String { rawValue }
+}
+
 private extension PaymentMethodType {
-    static let visibleOrder: [PaymentMethodType] = [.asset, .liability, .accounting, .pendingRealAccount]
+    static let visibleOrder: [PaymentMethodType] = [.asset, .liability, .accounting]
 
     var displayName: String {
         switch self {
@@ -4540,6 +4887,19 @@ private extension PaymentMethodType {
             return "账务处理型收付手段"
         case .pendingRealAccount:
             return "待补真实账户"
+        }
+    }
+
+    var defaultSemanticTags: [String] {
+        switch self {
+        case .asset:
+            return ["资产型"]
+        case .liability:
+            return ["负债型"]
+        case .accounting:
+            return ["账务处理型"]
+        case .pendingRealAccount:
+            return ["待补真实账户"]
         }
     }
 }
@@ -4558,5 +4918,9 @@ private extension AccountingElement {
         case .expense:
             return "支出"
         }
+    }
+
+    var defaultSemanticTag: String {
+        displayName
     }
 }

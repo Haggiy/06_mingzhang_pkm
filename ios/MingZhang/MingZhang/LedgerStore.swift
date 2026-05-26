@@ -40,6 +40,23 @@ final class LedgerStore: ObservableObject {
     @Published var selectedImportCandidateIds: Set<UUID> = []
     @Published var lastError: String?
 
+    var userVisibleMethods: [PaymentMethod] {
+        methods.filter { $0.methodType != .pendingRealAccount }
+    }
+
+    var activePaymentMethods: [PaymentMethod] {
+        userVisibleMethods.filter(\.isActive)
+    }
+
+    var activePaymentTypes: [PaymentType] {
+        types.filter(\.isActive)
+    }
+
+    var activePaymentDetails: [PaymentDetail] {
+        let activeTypeIds = Set(activePaymentTypes.map(\.id))
+        return details.filter { $0.isActive && activeTypeIds.contains($0.paymentTypeId) }
+    }
+
     private var useCases: LedgerUseCases?
 
     func bootstrap() async {
@@ -176,6 +193,114 @@ final class LedgerStore: ObservableObject {
     func querySourceRecords(recordIds: [UUID]) throws -> [JournalRecord] {
         guard let useCases else { return [] }
         return try useCases.queryJournalRecords(recordIds: recordIds)
+    }
+
+    func createPaymentMethod(input: CreatePaymentMethodInput) -> Bool {
+        do {
+            guard let useCases else { return false }
+            _ = try useCases.createPaymentMethod(input: input)
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func updatePaymentMethod(id: UUID, input: UpdatePaymentMethodInput) -> Bool {
+        do {
+            guard let useCases else { return false }
+            _ = try useCases.updatePaymentMethod(id: id, input: input)
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func disablePaymentMethod(id: UUID) -> Bool {
+        do {
+            guard let useCases else { return false }
+            _ = try useCases.disablePaymentMethod(id: id)
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func createPaymentType(input: CreatePaymentTypeInput) -> Bool {
+        do {
+            guard let useCases else { return false }
+            _ = try useCases.createPaymentType(input: input)
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func updatePaymentType(id: UUID, input: UpdatePaymentTypeInput) -> Bool {
+        do {
+            guard let useCases else { return false }
+            _ = try useCases.updatePaymentType(id: id, input: input)
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func disablePaymentType(id: UUID) -> Bool {
+        do {
+            guard let useCases else { return false }
+            _ = try useCases.disablePaymentType(id: id)
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func createPaymentDetail(input: CreatePaymentDetailInput) -> Bool {
+        do {
+            guard let useCases else { return false }
+            _ = try useCases.createPaymentDetail(input: input)
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func updatePaymentDetail(id: UUID, input: UpdatePaymentDetailInput) -> Bool {
+        do {
+            guard let useCases else { return false }
+            _ = try useCases.updatePaymentDetail(id: id, input: input)
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func disablePaymentDetail(id: UUID) -> Bool {
+        do {
+            guard let useCases else { return false }
+            _ = try useCases.disablePaymentDetail(id: id)
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
     }
 
     func prepareImport(source: ImportSource) {

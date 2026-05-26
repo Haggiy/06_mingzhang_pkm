@@ -87,6 +87,8 @@ public struct PaymentMethod: Equatable, Identifiable, Sendable {
     public var name: String
     public var methodType: PaymentMethodType
     public var isActive: Bool
+    public var semanticTags: [String]
+    public var configVersion: Int
 }
 
 public struct PaymentType: Equatable, Identifiable, Sendable {
@@ -94,6 +96,9 @@ public struct PaymentType: Equatable, Identifiable, Sendable {
     public var name: String
     public var element: AccountingElement
     public var isActive: Bool
+    public var semanticTags: [String]
+    public var configDescription: String?
+    public var configVersion: Int
 }
 
 public struct PaymentDetail: Equatable, Identifiable, Sendable {
@@ -101,6 +106,115 @@ public struct PaymentDetail: Equatable, Identifiable, Sendable {
     public var name: String
     public var paymentTypeId: UUID
     public var isActive: Bool
+    public var semanticTags: [String]
+    public var configDescription: String?
+    public var configVersion: Int
+}
+
+public struct CreatePaymentMethodInput: Equatable, Sendable {
+    public var name: String
+    public var methodType: PaymentMethodType
+    public var semanticTags: [String]
+
+    public init(name: String, methodType: PaymentMethodType, semanticTags: [String] = []) {
+        self.name = name
+        self.methodType = methodType
+        self.semanticTags = semanticTags
+    }
+}
+
+public struct UpdatePaymentMethodInput: Equatable, Sendable {
+    public var name: String?
+    public var methodType: PaymentMethodType?
+    public var semanticTags: [String]?
+
+    public init(name: String? = nil, methodType: PaymentMethodType? = nil, semanticTags: [String]? = nil) {
+        self.name = name
+        self.methodType = methodType
+        self.semanticTags = semanticTags
+    }
+}
+
+public struct CreatePaymentTypeInput: Equatable, Sendable {
+    public var name: String
+    public var element: AccountingElement
+    public var semanticTags: [String]
+    public var configDescription: String?
+
+    public init(
+        name: String,
+        element: AccountingElement,
+        semanticTags: [String] = [],
+        configDescription: String? = nil
+    ) {
+        self.name = name
+        self.element = element
+        self.semanticTags = semanticTags
+        self.configDescription = configDescription
+    }
+}
+
+public struct UpdatePaymentTypeInput: Equatable, Sendable {
+    public var name: String?
+    public var element: AccountingElement?
+    public var semanticTags: [String]?
+    public var configDescription: String?
+
+    public init(
+        name: String? = nil,
+        element: AccountingElement? = nil,
+        semanticTags: [String]? = nil,
+        configDescription: String? = nil
+    ) {
+        self.name = name
+        self.element = element
+        self.semanticTags = semanticTags
+        self.configDescription = configDescription
+    }
+}
+
+public struct CreatePaymentDetailInput: Equatable, Sendable {
+    public var name: String
+    public var paymentTypeId: UUID
+    public var semanticTags: [String]
+    public var configDescription: String?
+
+    public init(
+        name: String,
+        paymentTypeId: UUID,
+        semanticTags: [String] = [],
+        configDescription: String? = nil
+    ) {
+        self.name = name
+        self.paymentTypeId = paymentTypeId
+        self.semanticTags = semanticTags
+        self.configDescription = configDescription
+    }
+}
+
+public struct UpdatePaymentDetailInput: Equatable, Sendable {
+    public var name: String?
+    public var paymentTypeId: UUID?
+    public var semanticTags: [String]?
+    public var configDescription: String?
+
+    public init(
+        name: String? = nil,
+        paymentTypeId: UUID? = nil,
+        semanticTags: [String]? = nil,
+        configDescription: String? = nil
+    ) {
+        self.name = name
+        self.paymentTypeId = paymentTypeId
+        self.semanticTags = semanticTags
+        self.configDescription = configDescription
+    }
+}
+
+public enum SemanticTagCatalog {
+    public static let paymentMethodTags = ["资产型", "负债型", "账务处理型"]
+    public static let paymentTypeTags = ["资产", "负债", "收入", "支出"]
+    public static let paymentDetailTags = ["递延资产", "已实现投资收益", "已实现投资亏损", "金融费用", "账单还款"]
 }
 
 public struct JournalRecord: Equatable, Identifiable, Sendable {
@@ -448,6 +562,31 @@ public final class LedgerDatabase: @unchecked Sendable {
                 table.column("updated_at", .text).notNull()
             }
         }
+        migrator.registerMigration("v4_p1_settings_semantics") { db in
+            try db.alter(table: "payment_methods") { table in
+                table.add(column: "semantic_tags", .text).notNull().defaults(to: "[]")
+                table.add(column: "config_version", .integer).notNull().defaults(to: 1)
+                table.add(column: "seed_key", .text)
+            }
+
+            try db.alter(table: "payment_types") { table in
+                table.add(column: "semantic_tags", .text).notNull().defaults(to: "[]")
+                table.add(column: "config_description", .text)
+                table.add(column: "config_version", .integer).notNull().defaults(to: 1)
+                table.add(column: "seed_key", .text)
+            }
+
+            try db.alter(table: "payment_details") { table in
+                table.add(column: "semantic_tags", .text).notNull().defaults(to: "[]")
+                table.add(column: "config_description", .text)
+                table.add(column: "config_version", .integer).notNull().defaults(to: 1)
+                table.add(column: "seed_key", .text)
+            }
+
+            try db.create(index: "idx_payment_methods_seed_key", on: "payment_methods", columns: ["seed_key"], unique: true)
+            try db.create(index: "idx_payment_types_seed_key", on: "payment_types", columns: ["seed_key"], unique: true)
+            try db.create(index: "idx_payment_details_seed_key", on: "payment_details", columns: ["seed_key"], unique: true)
+        }
         return migrator
     }
 }
@@ -462,55 +601,310 @@ public final class LedgerUseCases: @unchecked Sendable {
     public func initializeLedgerSeed() throws {
         try database.writer.write { db in
             let now = Date()
-            try insertPaymentMethodIfNeeded(db, name: "电子钱包余额", methodType: .asset, now: now)
-            try insertPaymentMethodIfNeeded(db, name: "广发卡", methodType: .liability, now: now)
-            try insertPaymentMethodIfNeeded(db, name: "账务处理", methodType: .accounting, now: now)
-            try insertPaymentMethodIfNeeded(db, name: "待补真实账户", methodType: .pendingRealAccount, now: now)
+            for seed in paymentMethodSeeds {
+                try insertPaymentMethodIfNeeded(
+                    db,
+                    seedKey: seed.seedKey,
+                    name: seed.name,
+                    methodType: seed.methodType,
+                    semanticTags: seed.semanticTags,
+                    now: now
+                )
+            }
 
-            let type = try insertPaymentTypeIfNeeded(db, name: "生活必要开支", element: .expense, now: now)
-            try insertPaymentDetailIfNeeded(db, name: "伙食费", paymentTypeId: type.id, now: now)
+            var typeIdsBySeedKey: [String: UUID] = [:]
+            for seed in paymentTypeSeeds {
+                let type = try insertPaymentTypeIfNeeded(
+                    db,
+                    seedKey: seed.seedKey,
+                    name: seed.name,
+                    element: seed.element,
+                    semanticTags: seed.semanticTags,
+                    configDescription: seed.configDescription,
+                    now: now
+                )
+                typeIdsBySeedKey[seed.seedKey] = type.id
+            }
 
-            let entertainmentType = try insertPaymentTypeIfNeeded(db, name: "文娱游购开支", element: .expense, now: now)
-            try insertPaymentDetailIfNeeded(db, name: "饮食游乐费", paymentTypeId: entertainmentType.id, now: now)
-
-            let assetInvestmentType = try insertPaymentTypeIfNeeded(db, name: "资产类支出", element: .asset, now: now)
-            try insertPaymentDetailIfNeeded(db, name: "金融资产投资", paymentTypeId: assetInvestmentType.id, now: now)
-
-            let investmentIncomeType = try insertPaymentTypeIfNeeded(db, name: "理财收入", element: .income, now: now)
-            try insertPaymentDetailIfNeeded(db, name: "投资收益", paymentTypeId: investmentIncomeType.id, now: now)
-
-            let financeExpenseType = try insertPaymentTypeIfNeeded(db, name: "财务费用开支", element: .expense, now: now)
-            try insertPaymentDetailIfNeeded(db, name: "投资亏损", paymentTypeId: financeExpenseType.id, now: now)
+            for seed in paymentDetailSeeds {
+                guard let typeId = typeIdsBySeedKey[seed.paymentTypeSeedKey] else {
+                    throw MingZhangError.missingSeed("收付类型：\(seed.paymentTypeSeedKey)")
+                }
+                try insertPaymentDetailIfNeeded(
+                    db,
+                    seedKey: seed.seedKey,
+                    name: seed.name,
+                    paymentTypeId: typeId,
+                    semanticTags: seed.semanticTags,
+                    configDescription: seed.configDescription,
+                    now: now
+                )
+            }
         }
     }
 
-    public func queryPaymentMethods() throws -> [PaymentMethod] {
+    public func queryPaymentMethods(includeInactive: Bool = true, includeInternal: Bool = true) throws -> [PaymentMethod] {
         try database.writer.read { db in
-            try Row.fetchAll(db, sql: """
-                SELECT id, name, method_type, is_active
+            var sql = """
+                SELECT id, name, method_type, is_active, semantic_tags, config_version
                 FROM payment_methods
-                ORDER BY name
-                """).map(paymentMethod(from:))
+                WHERE 1 = 1
+                """
+            var arguments = StatementArguments()
+            if !includeInactive {
+                sql += " AND is_active = ?"
+                arguments += [true]
+            }
+            if !includeInternal {
+                sql += " AND method_type != ?"
+                arguments += [PaymentMethodType.pendingRealAccount.rawValue]
+            }
+            sql += " ORDER BY name"
+            return try Row.fetchAll(db, sql: sql, arguments: arguments).map(paymentMethod(from:))
         }
     }
 
-    public func queryPaymentTypes() throws -> [PaymentType] {
+    public func queryPaymentTypes(includeInactive: Bool = true) throws -> [PaymentType] {
         try database.writer.read { db in
-            try Row.fetchAll(db, sql: """
-                SELECT id, name, element, is_active
+            var sql = """
+                SELECT id, name, element, is_active, semantic_tags, config_description, config_version
                 FROM payment_types
-                ORDER BY name
-                """).map(paymentType(from:))
+                """
+            var arguments = StatementArguments()
+            if !includeInactive {
+                sql += " WHERE is_active = ?"
+                arguments += [true]
+            }
+            sql += " ORDER BY name"
+            return try Row.fetchAll(db, sql: sql, arguments: arguments).map(paymentType(from:))
         }
     }
 
-    public func queryPaymentDetails() throws -> [PaymentDetail] {
+    public func queryPaymentDetails(includeInactive: Bool = true) throws -> [PaymentDetail] {
         try database.writer.read { db in
-            try Row.fetchAll(db, sql: """
-                SELECT id, name, payment_type_id, is_active
+            var sql = """
+                SELECT id, name, payment_type_id, is_active, semantic_tags, config_description, config_version
                 FROM payment_details
-                ORDER BY name
-                """).map(paymentDetail(from:))
+                """
+            var arguments = StatementArguments()
+            if !includeInactive {
+                sql += " WHERE is_active = ?"
+                arguments += [true]
+            }
+            sql += " ORDER BY name"
+            return try Row.fetchAll(db, sql: sql, arguments: arguments).map(paymentDetail(from:))
+        }
+    }
+
+    @discardableResult
+    public func createPaymentMethod(input: CreatePaymentMethodInput) throws -> PaymentMethod {
+        try database.writer.write { db in
+            let name = try normalizedConfigName(input.name, fieldName: "收付手段")
+            guard input.methodType != .pendingRealAccount else {
+                throw MingZhangError.validation("待补真实账户是导入内部占位，不能手动新增")
+            }
+            try ensureUniquePaymentMethodName(db, name: name)
+            let now = Date()
+            let id = UUID()
+            try db.execute(sql: """
+                INSERT INTO payment_methods (id, name, method_type, is_active, semantic_tags, config_version, seed_key, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                id.uuidString,
+                name,
+                input.methodType.rawValue,
+                true,
+                encodeStringList(normalizedTags(input.semanticTags)),
+                1,
+                nil,
+                encodeDate(now),
+                encodeDate(now)
+            ])
+            return try requirePaymentMethod(db, id: id)
+        }
+    }
+
+    @discardableResult
+    public func updatePaymentMethod(id: UUID, input: UpdatePaymentMethodInput) throws -> PaymentMethod {
+        let context = try database.writer.write { db in
+            var method = try requirePaymentMethod(db, id: id)
+            guard method.methodType != .pendingRealAccount else {
+                throw MingZhangError.validation("待补真实账户是导入内部占位，不能在设置中编辑")
+            }
+            let referenced = try hasJournalRecordReference(db, column: "payment_method_id", id: id)
+            let newName = try input.name.map { try normalizedConfigName($0, fieldName: "收付手段") } ?? method.name
+            if newName != method.name {
+                try ensureUniquePaymentMethodName(db, name: newName, excluding: id)
+                method.name = newName
+            }
+            if let methodType = input.methodType, methodType != method.methodType {
+                guard methodType != .pendingRealAccount else {
+                    throw MingZhangError.validation("待补真实账户是导入内部占位，不能在设置中编辑")
+                }
+                guard !referenced else {
+                    throw MingZhangError.validation("已被历史流水引用的收付手段不能修改属性")
+                }
+                method.methodType = methodType
+            }
+            if let semanticTags = input.semanticTags {
+                method.semanticTags = normalizedTags(semanticTags)
+            }
+            try persistPaymentMethodUpdate(db, method: method)
+            let affectedMonths = try referencedAccountMonths(db, column: "payment_method_id", id: id)
+            return (method: try requirePaymentMethod(db, id: id), affectedMonths: affectedMonths)
+        }
+        for month in context.affectedMonths {
+            _ = try recalculateAccountMonth(month)
+        }
+        return context.method
+    }
+
+    @discardableResult
+    public func disablePaymentMethod(id: UUID) throws -> PaymentMethod {
+        try database.writer.write { db in
+            var method = try requirePaymentMethod(db, id: id)
+            guard method.methodType != .pendingRealAccount else {
+                throw MingZhangError.validation("待补真实账户是导入内部占位，不能在设置中停用")
+            }
+            method.isActive = false
+            try persistPaymentMethodUpdate(db, method: method)
+            return try requirePaymentMethod(db, id: id)
+        }
+    }
+
+    @discardableResult
+    public func createPaymentType(input: CreatePaymentTypeInput) throws -> PaymentType {
+        try database.writer.write { db in
+            let name = try normalizedConfigName(input.name, fieldName: "收付类型")
+            try ensureUniquePaymentTypeName(db, name: name)
+            let now = Date()
+            let id = UUID()
+            try db.execute(sql: """
+                INSERT INTO payment_types (id, name, element, is_active, semantic_tags, config_description, config_version, seed_key, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                id.uuidString,
+                name,
+                input.element.rawValue,
+                true,
+                encodeStringList(normalizedTags(input.semanticTags)),
+                normalizedOptionalText(input.configDescription),
+                1,
+                nil,
+                encodeDate(now),
+                encodeDate(now)
+            ])
+            return try requirePaymentType(db, id: id)
+        }
+    }
+
+    @discardableResult
+    public func updatePaymentType(id: UUID, input: UpdatePaymentTypeInput) throws -> PaymentType {
+        try database.writer.write { db in
+            var type = try requirePaymentType(db, id: id)
+            let referenced = try hasJournalRecordReference(db, column: "payment_type_id", id: id)
+            let newName = try input.name.map { try normalizedConfigName($0, fieldName: "收付类型") } ?? type.name
+            if newName != type.name {
+                try ensureUniquePaymentTypeName(db, name: newName, excluding: id)
+                type.name = newName
+            }
+            if let element = input.element, element != type.element {
+                guard !referenced else {
+                    throw MingZhangError.validation("已被历史流水引用的收付类型不能修改会计要素")
+                }
+                type.element = element
+            }
+            if let semanticTags = input.semanticTags {
+                type.semanticTags = normalizedTags(semanticTags)
+            }
+            if let configDescription = input.configDescription {
+                type.configDescription = normalizedOptionalText(configDescription)
+            }
+            try persistPaymentTypeUpdate(db, type: type)
+            return try requirePaymentType(db, id: id)
+        }
+    }
+
+    @discardableResult
+    public func disablePaymentType(id: UUID) throws -> PaymentType {
+        try database.writer.write { db in
+            var type = try requirePaymentType(db, id: id)
+            type.isActive = false
+            try persistPaymentTypeUpdate(db, type: type)
+            try db.execute(sql: """
+                UPDATE payment_details
+                SET is_active = ?, updated_at = ?
+                WHERE payment_type_id = ?
+                """, arguments: [false, encodeDate(Date()), id.uuidString])
+            return try requirePaymentType(db, id: id)
+        }
+    }
+
+    @discardableResult
+    public func createPaymentDetail(input: CreatePaymentDetailInput) throws -> PaymentDetail {
+        try database.writer.write { db in
+            let type = try requirePaymentType(db, id: input.paymentTypeId)
+            try requireActive(type, label: "收付类型")
+            let name = try normalizedConfigName(input.name, fieldName: "类型明细")
+            try ensureUniquePaymentDetailName(db, name: name, paymentTypeId: type.id)
+            let now = Date()
+            let id = UUID()
+            try db.execute(sql: """
+                INSERT INTO payment_details (id, name, payment_type_id, is_active, semantic_tags, config_description, config_version, seed_key, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, arguments: [
+                id.uuidString,
+                name,
+                type.id.uuidString,
+                true,
+                encodeStringList(normalizedTags(input.semanticTags)),
+                normalizedOptionalText(input.configDescription),
+                1,
+                nil,
+                encodeDate(now),
+                encodeDate(now)
+            ])
+            return try requirePaymentDetail(db, id: id)
+        }
+    }
+
+    @discardableResult
+    public func updatePaymentDetail(id: UUID, input: UpdatePaymentDetailInput) throws -> PaymentDetail {
+        try database.writer.write { db in
+            var detail = try requirePaymentDetail(db, id: id)
+            let referenced = try hasJournalRecordReference(db, column: "payment_detail_id", id: id)
+            let newTypeId = input.paymentTypeId ?? detail.paymentTypeId
+            if newTypeId != detail.paymentTypeId {
+                guard !referenced else {
+                    throw MingZhangError.validation("已被历史流水引用的类型明细不能移动归属")
+                }
+                let type = try requirePaymentType(db, id: newTypeId)
+                try requireActive(type, label: "收付类型")
+                detail.paymentTypeId = type.id
+            }
+            let newName = try input.name.map { try normalizedConfigName($0, fieldName: "类型明细") } ?? detail.name
+            if newName != detail.name {
+                try ensureUniquePaymentDetailName(db, name: newName, paymentTypeId: detail.paymentTypeId, excluding: id)
+                detail.name = newName
+            }
+            if let semanticTags = input.semanticTags {
+                detail.semanticTags = normalizedTags(semanticTags)
+            }
+            if let configDescription = input.configDescription {
+                detail.configDescription = normalizedOptionalText(configDescription)
+            }
+            try persistPaymentDetailUpdate(db, detail: detail)
+            return try requirePaymentDetail(db, id: id)
+        }
+    }
+
+    @discardableResult
+    public func disablePaymentDetail(id: UUID) throws -> PaymentDetail {
+        try database.writer.write { db in
+            var detail = try requirePaymentDetail(db, id: id)
+            detail.isActive = false
+            try persistPaymentDetailUpdate(db, detail: detail)
+            return try requirePaymentDetail(db, id: id)
         }
     }
 
@@ -881,10 +1275,15 @@ public final class LedgerUseCases: @unchecked Sendable {
                 if let paymentMethodId = candidate.paymentMethodId {
                     method = try requirePaymentMethod(db, id: paymentMethodId)
                 } else {
-                    method = try requirePaymentMethod(db, name: "待补真实账户")
+                    method = try requirePaymentMethodBySeedKey(db, seedKey: "pending_real_account")
                 }
                 let type = try requirePaymentType(db, id: typeId)
                 let detail = try requirePaymentDetail(db, id: detailId)
+                if method.methodType != .pendingRealAccount {
+                    try requireActive(method)
+                }
+                try requireActive(type)
+                try requireActive(detail)
                 let recordAmount = candidate.amount
                 try validateRecordFields(
                     accountMonth: candidate.accountMonth,
@@ -972,6 +1371,12 @@ public final class LedgerUseCases: @unchecked Sendable {
             let method = try requirePaymentMethod(db, name: input.paymentMethodName)
             let type = try requirePaymentType(db, name: input.paymentTypeName)
             let detail = try requirePaymentDetail(db, name: input.paymentDetailName, paymentTypeId: type.id)
+            guard method.methodType != .pendingRealAccount else {
+                throw MingZhangError.validation("待补真实账户是导入内部占位，不能用于手工记账")
+            }
+            try requireActive(method)
+            try requireActive(type)
+            try requireActive(detail)
             try validateRecordFields(
                 accountMonth: input.accountMonth,
                 amount: input.amount,
@@ -1029,6 +1434,13 @@ public final class LedgerUseCases: @unchecked Sendable {
             }
             if let paymentMethodName = changes.paymentMethodName {
                 let method = try requirePaymentMethod(db, name: paymentMethodName)
+                let isChangingMethod = method.id != record.paymentMethodId
+                guard method.methodType != .pendingRealAccount || !isChangingMethod else {
+                    throw MingZhangError.validation("待补真实账户是导入内部占位，不能用于手工记账")
+                }
+                if isChangingMethod {
+                    try requireActive(method)
+                }
                 record.paymentMethodId = method.id
                 record.paymentMethodName = method.name
             }
@@ -1037,11 +1449,17 @@ public final class LedgerUseCases: @unchecked Sendable {
             }
             if let paymentTypeName = changes.paymentTypeName {
                 let type = try requirePaymentType(db, name: paymentTypeName)
+                if type.id != record.paymentTypeId {
+                    try requireActive(type)
+                }
                 record.paymentTypeId = type.id
                 record.paymentTypeName = type.name
             }
             if let paymentDetailName = changes.paymentDetailName {
                 let detail = try requirePaymentDetail(db, name: paymentDetailName, paymentTypeId: record.paymentTypeId)
+                if detail.id != record.paymentDetailId {
+                    try requireActive(detail)
+                }
                 record.paymentDetailId = detail.id
                 record.paymentDetailName = detail.name
             }
@@ -1268,9 +1686,9 @@ public final class LedgerUseCases: @unchecked Sendable {
         try database.writer.write { db in
             let rows = try fetchSourceRecordsWithSemantics(db, accountMonth: accountMonth)
             let now = Date()
-            let accountingMethod = try requirePaymentMethod(db, name: "账务处理")
-            let defaultType = try requirePaymentType(db, name: "生活必要开支")
-            let defaultDetail = try requirePaymentDetail(db, name: "伙食费", paymentTypeId: defaultType.id)
+            let accountingMethod = try requirePaymentMethodBySeedKey(db, seedKey: "accounting")
+            let defaultType = try requirePaymentTypeBySeedKey(db, seedKey: "essential_expense")
+            let defaultDetail = try requirePaymentDetailBySeedKey(db, seedKey: "essential_food")
             var createdIds: [UUID] = []
             var updatedIds: [UUID] = []
             var deletedIds: [UUID] = []
@@ -1406,6 +1824,110 @@ private struct ImportParseResult {
     var issues: [ImportIssue]
 }
 
+private struct PaymentMethodSeed {
+    var seedKey: String
+    var name: String
+    var methodType: PaymentMethodType
+    var semanticTags: [String]
+}
+
+private struct PaymentTypeSeed {
+    var seedKey: String
+    var name: String
+    var element: AccountingElement
+    var semanticTags: [String]
+    var configDescription: String?
+}
+
+private struct PaymentDetailSeed {
+    var seedKey: String
+    var paymentTypeSeedKey: String
+    var name: String
+    var semanticTags: [String]
+    var configDescription: String?
+}
+
+private let paymentMethodSeeds: [PaymentMethodSeed] = [
+    PaymentMethodSeed(seedKey: "cash", name: "现金", methodType: .asset, semanticTags: ["资产型"]),
+    PaymentMethodSeed(seedKey: "wallet", name: "电子钱包余额", methodType: .asset, semanticTags: ["资产型"]),
+    PaymentMethodSeed(seedKey: "huabei", name: "花呗", methodType: .liability, semanticTags: ["负债型"]),
+    PaymentMethodSeed(seedKey: "cgb_card", name: "广发卡", methodType: .liability, semanticTags: ["负债型"]),
+    PaymentMethodSeed(seedKey: "cmb_card", name: "招商卡", methodType: .liability, semanticTags: ["负债型"]),
+    PaymentMethodSeed(seedKey: "pingan_card", name: "平安卡", methodType: .liability, semanticTags: ["负债型"]),
+    PaymentMethodSeed(seedKey: "beijing_card", name: "北京卡", methodType: .liability, semanticTags: ["负债型"]),
+    PaymentMethodSeed(seedKey: "ant_card", name: "蚂蚁卡", methodType: .liability, semanticTags: ["负债型"]),
+    PaymentMethodSeed(seedKey: "jd_baitiao", name: "京东白条", methodType: .liability, semanticTags: ["负债型"]),
+    PaymentMethodSeed(seedKey: "accounting", name: "账务处理", methodType: .accounting, semanticTags: ["账务处理型"]),
+    PaymentMethodSeed(seedKey: "pending_real_account", name: "待补真实账户", methodType: .pendingRealAccount, semanticTags: ["待补真实账户"])
+]
+
+private let paymentTypeSeeds: [PaymentTypeSeed] = [
+    PaymentTypeSeed(seedKey: "essential_expense", name: "生活必要开支", element: .expense, semanticTags: ["支出"], configDescription: nil),
+    PaymentTypeSeed(seedKey: "leisure_expense", name: "文娱游购开支", element: .expense, semanticTags: ["支出"], configDescription: nil),
+    PaymentTypeSeed(seedKey: "finance_expense", name: "财务费用开支", element: .expense, semanticTags: ["支出"], configDescription: nil),
+    PaymentTypeSeed(seedKey: "self_investment_expense", name: "投资自身开支", element: .expense, semanticTags: ["支出"], configDescription: nil),
+    PaymentTypeSeed(seedKey: "other_necessary_expense", name: "其他必要开支", element: .expense, semanticTags: ["支出"], configDescription: nil),
+    PaymentTypeSeed(seedKey: "work_income", name: "工作收入", element: .income, semanticTags: ["收入"], configDescription: nil),
+    PaymentTypeSeed(seedKey: "investment_income", name: "理财收入", element: .income, semanticTags: ["收入"], configDescription: nil),
+    PaymentTypeSeed(seedKey: "other_income", name: "其他收入", element: .income, semanticTags: ["收入"], configDescription: nil),
+    PaymentTypeSeed(seedKey: "asset_outflow", name: "资产类支出", element: .asset, semanticTags: ["资产"], configDescription: nil),
+    PaymentTypeSeed(seedKey: "liability_increase", name: "负债类增记", element: .liability, semanticTags: ["负债"], configDescription: nil),
+    PaymentTypeSeed(seedKey: "liability_decrease", name: "负债类减记", element: .liability, semanticTags: ["负债"], configDescription: nil)
+]
+
+private let paymentDetailSeeds: [PaymentDetailSeed] = [
+    PaymentDetailSeed(seedKey: "essential_food", paymentTypeSeedKey: "essential_expense", name: "伙食费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "essential_transport", paymentTypeSeedKey: "essential_expense", name: "交通通信费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "essential_rent", paymentTypeSeedKey: "essential_expense", name: "房租费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "essential_home", paymentTypeSeedKey: "essential_expense", name: "其他必要家用", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "essential_clothing", paymentTypeSeedKey: "essential_expense", name: "必要着装费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "essential_pet", paymentTypeSeedKey: "essential_expense", name: "宠物养育费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "leisure_food_travel", paymentTypeSeedKey: "leisure_expense", name: "饮食游乐费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "leisure_shopping", paymentTypeSeedKey: "leisure_expense", name: "日常购物费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "leisure_large_purchase", paymentTypeSeedKey: "leisure_expense", name: "大件购置费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "finance_interest", paymentTypeSeedKey: "finance_expense", name: "金融利息支出", semanticTags: ["金融费用"], configDescription: nil),
+    PaymentDetailSeed(seedKey: "finance_fee_penalty", paymentTypeSeedKey: "finance_expense", name: "金融手续费与罚款", semanticTags: ["金融费用"], configDescription: nil),
+    PaymentDetailSeed(seedKey: "finance_investment_loss", paymentTypeSeedKey: "finance_expense", name: "投资亏损", semanticTags: ["已实现投资亏损"], configDescription: nil),
+    PaymentDetailSeed(seedKey: "finance_cashout", paymentTypeSeedKey: "finance_expense", name: "账单套现", semanticTags: ["金融费用"], configDescription: nil),
+    PaymentDetailSeed(seedKey: "self_education", paymentTypeSeedKey: "self_investment_expense", name: "教育费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "self_book", paymentTypeSeedKey: "self_investment_expense", name: "图书费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "self_office_printing", paymentTypeSeedKey: "self_investment_expense", name: "办公文印费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "self_fitness", paymentTypeSeedKey: "self_investment_expense", name: "健身训练费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "other_parent_support", paymentTypeSeedKey: "other_necessary_expense", name: "父母亲人赡养费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "other_relationship", paymentTypeSeedKey: "other_necessary_expense", name: "人情费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "other_insurance", paymentTypeSeedKey: "other_necessary_expense", name: "保险费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "other_medical", paymentTypeSeedKey: "other_necessary_expense", name: "医疗费", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "work_salary", paymentTypeSeedKey: "work_income", name: "到手工资", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "work_social_security", paymentTypeSeedKey: "work_income", name: "社保", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "work_housing_fund", paymentTypeSeedKey: "work_income", name: "公积金", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "work_non_cash_benefit", paymentTypeSeedKey: "work_income", name: "非货币性福利", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "work_part_time", paymentTypeSeedKey: "work_income", name: "兼职收入", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "work_bonus", paymentTypeSeedKey: "work_income", name: "奖金", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "investment_money_market_income", paymentTypeSeedKey: "investment_income", name: "货币理财收入", semanticTags: ["已实现投资收益"], configDescription: nil),
+    PaymentDetailSeed(seedKey: "investment_equity_income", paymentTypeSeedKey: "investment_income", name: "权益理财收入", semanticTags: ["已实现投资收益"], configDescription: nil),
+    PaymentDetailSeed(seedKey: "investment_bond_income", paymentTypeSeedKey: "investment_income", name: "债券理财收入", semanticTags: ["已实现投资收益"], configDescription: nil),
+    PaymentDetailSeed(seedKey: "investment_generic_income", paymentTypeSeedKey: "investment_income", name: "投资收益", semanticTags: ["已实现投资收益"], configDescription: nil),
+    PaymentDetailSeed(seedKey: "other_income_generic", paymentTypeSeedKey: "other_income", name: "其他收入", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "other_income_parent", paymentTypeSeedKey: "other_income", name: "父母资助", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "other_income_social_security_return", paymentTypeSeedKey: "other_income", name: "社保返还", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "liability_bill_accrual", paymentTypeSeedKey: "liability_increase", name: "账单补记", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "liability_bank_loan", paymentTypeSeedKey: "liability_increase", name: "银行借款", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "liability_cash_installment", paymentTypeSeedKey: "liability_increase", name: "现金分期", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "liability_bill_installment", paymentTypeSeedKey: "liability_increase", name: "账单分期", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "liability_purchase_installment", paymentTypeSeedKey: "liability_increase", name: "消费分期", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "liability_family_loan", paymentTypeSeedKey: "liability_increase", name: "亲朋借款", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "liability_bill_repayment", paymentTypeSeedKey: "liability_decrease", name: "账单还款", semanticTags: ["账单还款"], configDescription: nil),
+    PaymentDetailSeed(seedKey: "liability_bank_loan_repayment", paymentTypeSeedKey: "liability_decrease", name: "银行借款还款", semanticTags: ["账单还款"], configDescription: nil),
+    PaymentDetailSeed(seedKey: "liability_family_loan_repayment", paymentTypeSeedKey: "liability_decrease", name: "亲朋借款还款", semanticTags: ["账单还款"], configDescription: nil),
+    PaymentDetailSeed(seedKey: "asset_cash_saving", paymentTypeSeedKey: "asset_outflow", name: "现金储蓄", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "asset_dedicated_saving", paymentTypeSeedKey: "asset_outflow", name: "专项储蓄", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "asset_financial_investment", paymentTypeSeedKey: "asset_outflow", name: "金融资产投资", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "asset_personal_account", paymentTypeSeedKey: "asset_outflow", name: "个人账户", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "asset_receivable", paymentTypeSeedKey: "asset_outflow", name: "应收账款", semanticTags: [], configDescription: nil),
+    PaymentDetailSeed(seedKey: "asset_deferred_expense", paymentTypeSeedKey: "asset_outflow", name: "长期待摊费用", semanticTags: ["递延资产"], configDescription: nil),
+    PaymentDetailSeed(seedKey: "asset_other", paymentTypeSeedKey: "asset_outflow", name: "其他资产类支出", semanticTags: [], configDescription: nil)
+]
+
 private let selectJournalRecordSQL = """
     SELECT
         journal_records.id,
@@ -1441,63 +1963,157 @@ private func sqlPlaceholders(_ count: Int) -> String {
     "(\(Array(repeating: "?", count: count).joined(separator: ",")))"
 }
 
-private func insertPaymentMethodIfNeeded(
+private func rowExists(_ db: Database, table: String, column: String, value: String) throws -> Bool {
+    let count = try Int.fetchOne(
+        db,
+        sql: "SELECT COUNT(*) FROM \(table) WHERE \(column) = ?",
+        arguments: [value]
+    ) ?? 0
+    return count > 0
+}
+
+private func fillSeedMetadataIfNeeded(
     _ db: Database,
-    name: String,
-    methodType: PaymentMethodType,
-    now: Date
+    table: String,
+    seedKey: String,
+    semanticTags: [String]
 ) throws {
     try db.execute(sql: """
-        INSERT OR IGNORE INTO payment_methods (id, name, method_type, is_active, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        UPDATE \(table)
+        SET semantic_tags = CASE WHEN semantic_tags = '[]' THEN ? ELSE semantic_tags END,
+            config_version = CASE WHEN config_version IS NULL THEN 1 ELSE config_version END
+        WHERE seed_key = ?
+        """, arguments: [encodeStringList(semanticTags), seedKey])
+}
+
+private func insertPaymentMethodIfNeeded(
+    _ db: Database,
+    seedKey: String,
+    name: String,
+    methodType: PaymentMethodType,
+    semanticTags: [String],
+    now: Date
+) throws {
+    if try rowExists(db, table: "payment_methods", column: "seed_key", value: seedKey) {
+        try fillSeedMetadataIfNeeded(db, table: "payment_methods", seedKey: seedKey, semanticTags: semanticTags)
+        return
+    }
+    if try rowExists(db, table: "payment_methods", column: "name", value: name) {
+        try db.execute(sql: """
+            UPDATE payment_methods
+            SET seed_key = ?,
+                semantic_tags = CASE WHEN semantic_tags = '[]' THEN ? ELSE semantic_tags END,
+                config_version = CASE WHEN config_version IS NULL THEN 1 ELSE config_version END
+            WHERE name = ? AND seed_key IS NULL
+            """, arguments: [seedKey, encodeStringList(semanticTags), name])
+        return
+    }
+
+    try db.execute(sql: """
+        INSERT INTO payment_methods (id, name, method_type, is_active, semantic_tags, config_version, seed_key, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, arguments: [
-            UUID().uuidString,
-            name,
-            methodType.rawValue,
-            true,
-            encodeDate(now),
-            encodeDate(now)
-        ])
+        UUID().uuidString,
+        name,
+        methodType.rawValue,
+        true,
+        encodeStringList(semanticTags),
+        1,
+        seedKey,
+        encodeDate(now),
+        encodeDate(now)
+    ])
 }
 
 @discardableResult
 private func insertPaymentTypeIfNeeded(
     _ db: Database,
+    seedKey: String,
     name: String,
     element: AccountingElement,
+    semanticTags: [String],
+    configDescription: String?,
     now: Date
 ) throws -> PaymentType {
+    if let existing = try paymentTypeBySeedKey(db, seedKey: seedKey) {
+        try fillSeedMetadataIfNeeded(db, table: "payment_types", seedKey: seedKey, semanticTags: semanticTags)
+        return existing
+    }
+    if try rowExists(db, table: "payment_types", column: "name", value: name) {
+        try db.execute(sql: """
+            UPDATE payment_types
+            SET seed_key = ?,
+                semantic_tags = CASE WHEN semantic_tags = '[]' THEN ? ELSE semantic_tags END,
+                config_description = COALESCE(config_description, ?),
+                config_version = CASE WHEN config_version IS NULL THEN 1 ELSE config_version END
+            WHERE name = ? AND seed_key IS NULL
+            """, arguments: [seedKey, encodeStringList(semanticTags), configDescription, name])
+        return try requirePaymentType(db, name: name)
+    }
+
     try db.execute(sql: """
-        INSERT OR IGNORE INTO payment_types (id, name, element, is_active, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO payment_types (id, name, element, is_active, semantic_tags, config_description, config_version, seed_key, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, arguments: [
-            UUID().uuidString,
-            name,
-            element.rawValue,
-            true,
-            encodeDate(now),
-            encodeDate(now)
-        ])
-    return try requirePaymentType(db, name: name)
+        UUID().uuidString,
+        name,
+        element.rawValue,
+        true,
+        encodeStringList(semanticTags),
+        configDescription,
+        1,
+        seedKey,
+        encodeDate(now),
+        encodeDate(now)
+    ])
+    return try requirePaymentTypeBySeedKey(db, seedKey: seedKey)
 }
 
 private func insertPaymentDetailIfNeeded(
     _ db: Database,
+    seedKey: String,
     name: String,
     paymentTypeId: UUID,
+    semanticTags: [String],
+    configDescription: String?,
     now: Date
 ) throws {
+    if try rowExists(db, table: "payment_details", column: "seed_key", value: seedKey) {
+        try fillSeedMetadataIfNeeded(db, table: "payment_details", seedKey: seedKey, semanticTags: semanticTags)
+        return
+    }
+    let existing = try Row.fetchOne(
+        db,
+        sql: "SELECT id FROM payment_details WHERE name = ? AND payment_type_id = ? AND seed_key IS NULL",
+        arguments: [name, paymentTypeId.uuidString]
+    )
+    if existing != nil {
+        try db.execute(sql: """
+            UPDATE payment_details
+            SET seed_key = ?,
+                semantic_tags = CASE WHEN semantic_tags = '[]' THEN ? ELSE semantic_tags END,
+                config_description = COALESCE(config_description, ?),
+                config_version = CASE WHEN config_version IS NULL THEN 1 ELSE config_version END
+            WHERE name = ? AND payment_type_id = ? AND seed_key IS NULL
+            """, arguments: [seedKey, encodeStringList(semanticTags), configDescription, name, paymentTypeId.uuidString])
+        return
+    }
+
     try db.execute(sql: """
-        INSERT OR IGNORE INTO payment_details (id, name, payment_type_id, is_active, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO payment_details (id, name, payment_type_id, is_active, semantic_tags, config_description, config_version, seed_key, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, arguments: [
-            UUID().uuidString,
-            name,
-            paymentTypeId.uuidString,
-            true,
-            encodeDate(now),
-            encodeDate(now)
-        ])
+        UUID().uuidString,
+        name,
+        paymentTypeId.uuidString,
+        true,
+        encodeStringList(semanticTags),
+        configDescription,
+        1,
+        seedKey,
+        encodeDate(now),
+        encodeDate(now)
+    ])
 }
 
 private func insertImportBatch(_ db: Database, batch: ImportBatch) throws {
@@ -1881,13 +2497,13 @@ private func reflowInvestmentFeedRecords(
     accountMonths: Set<String>
 ) throws {
     guard !accountMonths.isEmpty else { return }
-    let method = try requirePaymentMethod(db, name: "电子钱包余额")
-    let assetType = try requirePaymentType(db, name: "资产类支出")
-    let assetDetail = try requirePaymentDetail(db, name: "金融资产投资", paymentTypeId: assetType.id)
-    let incomeType = try requirePaymentType(db, name: "理财收入")
-    let incomeDetail = try requirePaymentDetail(db, name: "投资收益", paymentTypeId: incomeType.id)
-    let lossType = try requirePaymentType(db, name: "财务费用开支")
-    let lossDetail = try requirePaymentDetail(db, name: "投资亏损", paymentTypeId: lossType.id)
+    let method = try requirePaymentMethodBySeedKey(db, seedKey: "wallet")
+    let assetType = try requirePaymentTypeBySeedKey(db, seedKey: "asset_outflow")
+    let assetDetail = try requirePaymentDetailBySeedKey(db, seedKey: "asset_financial_investment")
+    let incomeType = try requirePaymentTypeBySeedKey(db, seedKey: "investment_income")
+    let incomeDetail = try requirePaymentDetailBySeedKey(db, seedKey: "investment_generic_income")
+    let lossType = try requirePaymentTypeBySeedKey(db, seedKey: "finance_expense")
+    let lossDetail = try requirePaymentDetailBySeedKey(db, seedKey: "finance_investment_loss")
     let allTransactions = try fetchInvestmentTransactions(db, fundName: fundName)
     let objectKey = "investment:\(fundName)"
 
@@ -2154,10 +2770,216 @@ private func engineRecordNeedsUpdate(
         record.sourceInvestmentTransactionIds != draft.sourceInvestmentTransactionIds
 }
 
+private func normalizedConfigName(_ value: String, fieldName: String) throws -> String {
+    let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !name.isEmpty else {
+        throw MingZhangError.validation("\(fieldName)不能为空")
+    }
+    return name
+}
+
+private func normalizedOptionalText(_ value: String?) -> String? {
+    guard let value else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+private func normalizedTags(_ values: [String]) -> [String] {
+    var seen: Set<String> = []
+    var result: [String] = []
+    for value in values {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !seen.contains(trimmed) else { continue }
+        seen.insert(trimmed)
+        result.append(trimmed)
+    }
+    return result
+}
+
+private func ensureUniquePaymentMethodName(_ db: Database, name: String, excluding id: UUID? = nil) throws {
+    var sql = "SELECT id FROM payment_methods WHERE name = ?"
+    var arguments: StatementArguments = [name]
+    if let id {
+        sql += " AND id != ?"
+        arguments += [id.uuidString]
+    }
+    if try Row.fetchOne(db, sql: sql, arguments: arguments) != nil {
+        throw MingZhangError.validation("收付手段名称已存在：\(name)")
+    }
+}
+
+private func ensureUniquePaymentTypeName(_ db: Database, name: String, excluding id: UUID? = nil) throws {
+    var sql = "SELECT id FROM payment_types WHERE name = ?"
+    var arguments: StatementArguments = [name]
+    if let id {
+        sql += " AND id != ?"
+        arguments += [id.uuidString]
+    }
+    if try Row.fetchOne(db, sql: sql, arguments: arguments) != nil {
+        throw MingZhangError.validation("收付类型名称已存在：\(name)")
+    }
+}
+
+private func ensureUniquePaymentDetailName(
+    _ db: Database,
+    name: String,
+    paymentTypeId: UUID,
+    excluding id: UUID? = nil
+) throws {
+    var sql = "SELECT id FROM payment_details WHERE name = ? AND payment_type_id = ?"
+    var arguments: StatementArguments = [name, paymentTypeId.uuidString]
+    if let id {
+        sql += " AND id != ?"
+        arguments += [id.uuidString]
+    }
+    if try Row.fetchOne(db, sql: sql, arguments: arguments) != nil {
+        throw MingZhangError.validation("类型明细名称已存在：\(name)")
+    }
+}
+
+private func hasJournalRecordReference(_ db: Database, column: String, id: UUID) throws -> Bool {
+    let count = try Int.fetchOne(
+        db,
+        sql: "SELECT COUNT(*) FROM journal_records WHERE \(column) = ? AND record_source != ?",
+        arguments: [id.uuidString, RecordSource.engine.rawValue]
+    ) ?? 0
+    return count > 0
+}
+
+private func referencedAccountMonths(_ db: Database, column: String, id: UUID) throws -> [String] {
+    try String.fetchAll(
+        db,
+        sql: """
+            SELECT DISTINCT account_month
+            FROM journal_records
+            WHERE \(column) = ? AND record_source != ?
+            ORDER BY account_month ASC
+            """,
+        arguments: [id.uuidString, RecordSource.engine.rawValue]
+    )
+}
+
+private func requireActive(_ method: PaymentMethod) throws {
+    guard method.isActive else {
+        throw MingZhangError.validation("收付手段已停用：\(method.name)")
+    }
+}
+
+private func requireActive(_ type: PaymentType, label: String = "收付类型") throws {
+    guard type.isActive else {
+        throw MingZhangError.validation("\(label)已停用：\(type.name)")
+    }
+}
+
+private func requireActive(_ detail: PaymentDetail) throws {
+    guard detail.isActive else {
+        throw MingZhangError.validation("类型明细已停用：\(detail.name)")
+    }
+}
+
+private func persistPaymentMethodUpdate(_ db: Database, method: PaymentMethod) throws {
+    try db.execute(sql: """
+        UPDATE payment_methods
+        SET name = ?, method_type = ?, is_active = ?, semantic_tags = ?, config_version = ?, updated_at = ?
+        WHERE id = ?
+        """, arguments: [
+        method.name,
+        method.methodType.rawValue,
+        method.isActive,
+        encodeStringList(method.semanticTags),
+        method.configVersion,
+        encodeDate(Date()),
+        method.id.uuidString
+    ])
+}
+
+private func persistPaymentTypeUpdate(_ db: Database, type: PaymentType) throws {
+    try db.execute(sql: """
+        UPDATE payment_types
+        SET name = ?, element = ?, is_active = ?, semantic_tags = ?, config_description = ?, config_version = ?, updated_at = ?
+        WHERE id = ?
+        """, arguments: [
+        type.name,
+        type.element.rawValue,
+        type.isActive,
+        encodeStringList(type.semanticTags),
+        type.configDescription,
+        type.configVersion,
+        encodeDate(Date()),
+        type.id.uuidString
+    ])
+}
+
+private func persistPaymentDetailUpdate(_ db: Database, detail: PaymentDetail) throws {
+    try db.execute(sql: """
+        UPDATE payment_details
+        SET name = ?, payment_type_id = ?, is_active = ?, semantic_tags = ?, config_description = ?, config_version = ?, updated_at = ?
+        WHERE id = ?
+        """, arguments: [
+        detail.name,
+        detail.paymentTypeId.uuidString,
+        detail.isActive,
+        encodeStringList(detail.semanticTags),
+        detail.configDescription,
+        detail.configVersion,
+        encodeDate(Date()),
+        detail.id.uuidString
+    ])
+}
+
+private func paymentTypeBySeedKey(_ db: Database, seedKey: String) throws -> PaymentType? {
+    try Row.fetchOne(
+        db,
+        sql: """
+            SELECT id, name, element, is_active, semantic_tags, config_description, config_version
+            FROM payment_types
+            WHERE seed_key = ?
+            """,
+        arguments: [seedKey]
+    ).map(paymentType(from:))
+}
+
+private func requirePaymentTypeBySeedKey(_ db: Database, seedKey: String) throws -> PaymentType {
+    guard let type = try paymentTypeBySeedKey(db, seedKey: seedKey) else {
+        throw MingZhangError.missingSeed("收付类型：\(seedKey)")
+    }
+    return type
+}
+
+private func requirePaymentMethodBySeedKey(_ db: Database, seedKey: String) throws -> PaymentMethod {
+    guard let row = try Row.fetchOne(
+        db,
+        sql: """
+            SELECT id, name, method_type, is_active, semantic_tags, config_version
+            FROM payment_methods
+            WHERE seed_key = ?
+            """,
+        arguments: [seedKey]
+    ) else {
+        throw MingZhangError.missingSeed("收付手段：\(seedKey)")
+    }
+    return try paymentMethod(from: row)
+}
+
+private func requirePaymentDetailBySeedKey(_ db: Database, seedKey: String) throws -> PaymentDetail {
+    guard let row = try Row.fetchOne(
+        db,
+        sql: """
+            SELECT id, name, payment_type_id, is_active, semantic_tags, config_description, config_version
+            FROM payment_details
+            WHERE seed_key = ?
+            """,
+        arguments: [seedKey]
+    ) else {
+        throw MingZhangError.missingSeed("类型明细：\(seedKey)")
+    }
+    return try paymentDetail(from: row)
+}
+
 private func requirePaymentMethod(_ db: Database, name: String) throws -> PaymentMethod {
     guard let row = try Row.fetchOne(
         db,
-        sql: "SELECT id, name, method_type, is_active FROM payment_methods WHERE name = ?",
+        sql: "SELECT id, name, method_type, is_active, semantic_tags, config_version FROM payment_methods WHERE name = ?",
         arguments: [name]
     ) else {
         throw MingZhangError.missingSeed("收付手段：\(name)")
@@ -2168,7 +2990,7 @@ private func requirePaymentMethod(_ db: Database, name: String) throws -> Paymen
 private func requirePaymentMethod(_ db: Database, id: UUID) throws -> PaymentMethod {
     guard let row = try Row.fetchOne(
         db,
-        sql: "SELECT id, name, method_type, is_active FROM payment_methods WHERE id = ?",
+        sql: "SELECT id, name, method_type, is_active, semantic_tags, config_version FROM payment_methods WHERE id = ?",
         arguments: [id.uuidString]
     ) else {
         throw MingZhangError.missingSeed("收付手段：\(id.uuidString)")
@@ -2179,7 +3001,7 @@ private func requirePaymentMethod(_ db: Database, id: UUID) throws -> PaymentMet
 private func requirePaymentType(_ db: Database, name: String) throws -> PaymentType {
     guard let row = try Row.fetchOne(
         db,
-        sql: "SELECT id, name, element, is_active FROM payment_types WHERE name = ?",
+        sql: "SELECT id, name, element, is_active, semantic_tags, config_description, config_version FROM payment_types WHERE name = ?",
         arguments: [name]
     ) else {
         throw MingZhangError.missingSeed("收付类型：\(name)")
@@ -2190,7 +3012,7 @@ private func requirePaymentType(_ db: Database, name: String) throws -> PaymentT
 private func requirePaymentType(_ db: Database, id: UUID) throws -> PaymentType {
     guard let row = try Row.fetchOne(
         db,
-        sql: "SELECT id, name, element, is_active FROM payment_types WHERE id = ?",
+        sql: "SELECT id, name, element, is_active, semantic_tags, config_description, config_version FROM payment_types WHERE id = ?",
         arguments: [id.uuidString]
     ) else {
         throw MingZhangError.missingSeed("收付类型：\(id.uuidString)")
@@ -2202,7 +3024,7 @@ private func requirePaymentDetail(_ db: Database, name: String, paymentTypeId: U
     guard let row = try Row.fetchOne(
         db,
         sql: """
-            SELECT id, name, payment_type_id, is_active
+            SELECT id, name, payment_type_id, is_active, semantic_tags, config_description, config_version
             FROM payment_details
             WHERE name = ? AND payment_type_id = ?
             """,
@@ -2216,7 +3038,7 @@ private func requirePaymentDetail(_ db: Database, name: String, paymentTypeId: U
 private func requirePaymentDetail(_ db: Database, id: UUID) throws -> PaymentDetail {
     guard let row = try Row.fetchOne(
         db,
-        sql: "SELECT id, name, payment_type_id, is_active FROM payment_details WHERE id = ?",
+        sql: "SELECT id, name, payment_type_id, is_active, semantic_tags, config_description, config_version FROM payment_details WHERE id = ?",
         arguments: [id.uuidString]
     ) else {
         throw MingZhangError.missingSeed("类型明细：\(id.uuidString)")
@@ -2303,15 +3125,21 @@ private func applyImportCandidateChanges(
     }
     if let paymentMethodName = changes.paymentMethodName {
         let method = try requirePaymentMethod(db, name: paymentMethodName)
+        guard method.methodType != .pendingRealAccount else {
+            throw MingZhangError.validation("待补真实账户是导入内部占位，不能在导入整理中手动选择")
+        }
+        try requireActive(method)
         candidate.paymentMethodId = method.id
         candidate.paymentMethodName = method.name
     }
     if let paymentTypeName = changes.paymentTypeName {
         let type = try requirePaymentType(db, name: paymentTypeName)
+        try requireActive(type)
         candidate.paymentTypeId = type.id
         candidate.paymentTypeName = type.name
         if changes.paymentDetailName == nil, let detailName = candidate.paymentDetailName {
             let detail = try requirePaymentDetail(db, name: detailName, paymentTypeId: type.id)
+            try requireActive(detail)
             candidate.paymentDetailId = detail.id
             candidate.paymentDetailName = detail.name
         }
@@ -2321,6 +3149,7 @@ private func applyImportCandidateChanges(
             throw MingZhangError.validation("请先选择收付类型")
         }
         let detail = try requirePaymentDetail(db, name: paymentDetailName, paymentTypeId: typeId)
+        try requireActive(detail)
         candidate.paymentDetailId = detail.id
         candidate.paymentDetailName = detail.name
     }
@@ -2382,16 +3211,23 @@ private func resolveImportPaymentMethod(
     rawName: String?
 ) throws -> (id: UUID?, name: String?) {
     let cleaned = cleanImportField(rawName ?? "")
-    let pending = try requirePaymentMethod(db, name: "待补真实账户")
+    let pending = try requirePaymentMethodBySeedKey(db, seedKey: "pending_real_account")
     guard !cleaned.isEmpty, cleaned != "/" else {
         return (pending.id, pending.name)
     }
     if let exact = try Row.fetchOne(
         db,
-        sql: "SELECT id, name, method_type, is_active FROM payment_methods WHERE name = ?",
-        arguments: [cleaned]
+        sql: "SELECT id, name, method_type, is_active, semantic_tags, config_version FROM payment_methods WHERE name = ? AND is_active = ? AND method_type != ?",
+        arguments: [cleaned, true, PaymentMethodType.pendingRealAccount.rawValue]
     ).map(paymentMethod(from:)) {
         return (exact.id, exact.name)
+    }
+    if let exactInactiveOrInternal = try Row.fetchOne(
+        db,
+        sql: "SELECT id, name, method_type, is_active, semantic_tags, config_version FROM payment_methods WHERE name = ?",
+        arguments: [cleaned]
+    ).map(paymentMethod(from:)) {
+        return exactInactiveOrInternal.methodType == .pendingRealAccount ? (pending.id, pending.name) : (nil, cleaned)
     }
     switch source {
     case .alipay:
@@ -2489,7 +3325,9 @@ private func paymentMethod(from row: Row) throws -> PaymentMethod {
         id: try requireUUID(row["id"]),
         name: row["name"],
         methodType: PaymentMethodType(rawValue: row["method_type"]) ?? .pendingRealAccount,
-        isActive: row["is_active"]
+        isActive: row["is_active"],
+        semanticTags: decodeStringList(row["semantic_tags"]),
+        configVersion: row["config_version"]
     )
 }
 
@@ -2498,7 +3336,10 @@ private func paymentType(from row: Row) throws -> PaymentType {
         id: try requireUUID(row["id"]),
         name: row["name"],
         element: AccountingElement(rawValue: row["element"]) ?? .expense,
-        isActive: row["is_active"]
+        isActive: row["is_active"],
+        semanticTags: decodeStringList(row["semantic_tags"]),
+        configDescription: row["config_description"],
+        configVersion: row["config_version"]
     )
 }
 
@@ -2507,7 +3348,10 @@ private func paymentDetail(from row: Row) throws -> PaymentDetail {
         id: try requireUUID(row["id"]),
         name: row["name"],
         paymentTypeId: try requireUUID(row["payment_type_id"]),
-        isActive: row["is_active"]
+        isActive: row["is_active"],
+        semanticTags: decodeStringList(row["semantic_tags"]),
+        configDescription: row["config_description"],
+        configVersion: row["config_version"]
     )
 }
 
@@ -2665,6 +3509,23 @@ private func decodeUUIDList(_ value: String) -> [UUID] {
     value
         .split(separator: ",")
         .compactMap { UUID(uuidString: String($0)) }
+}
+
+private func encodeStringList(_ values: [String]) -> String {
+    guard let data = try? JSONEncoder().encode(values),
+          let encoded = String(data: data, encoding: .utf8) else {
+        return "[]"
+    }
+    return encoded
+}
+
+private func decodeStringList(_ value: String?) -> [String] {
+    guard let value,
+          let data = value.data(using: .utf8),
+          let decoded = try? JSONDecoder().decode([String].self, from: data) else {
+        return []
+    }
+    return decoded
 }
 
 private func parseImportRows(source: ImportSource, contents: String) throws -> ImportParseResult {

@@ -326,6 +326,41 @@ final class ImportMemoryUITests: XCTestCase {
         tapBackButton()
     }
 
+    func testSettingsCanCreateAndDisablePaymentMethod() {
+        continueAfterFailure = false
+        app.launch()
+
+        app.waitForMingZhangTab("设置").tap()
+        XCTAssertTrue(app.staticTexts["记账配置"].waitForExistence(timeout: 5))
+        tapVisibleButton(identifier: "settings_payment_methods")
+        XCTAssertTrue(app.staticTexts["收付手段管理"].waitForExistence(timeout: 5))
+
+        tapVisibleButton(identifier: "payment_method_add_asset")
+        XCTAssertTrue(app.staticTexts["新增收付手段"].waitForExistence(timeout: 5))
+
+        let nameField = app.textFields["payment_method_name_field"].firstMatch
+        XCTAssertTrue(nameField.waitForExistence(timeout: 5))
+        nameField.tap()
+        nameField.typeText("UI测试钱包")
+
+        let saveButton = app.buttons["payment_method_save"].firstMatch
+        XCTAssertTrue(saveButton.waitForExistence(timeout: 5))
+        saveButton.tap()
+
+        let createdRow = app.buttons["payment_method_row_UI测试钱包"].firstMatch
+        XCTAssertTrue(createdRow.waitForExistence(timeout: 5))
+        createdRow.tap()
+        XCTAssertTrue(app.staticTexts["编辑收付手段"].waitForExistence(timeout: 5))
+
+        let disableButton = app.buttons["payment_method_disable"].firstMatch
+        XCTAssertTrue(disableButton.waitForExistence(timeout: 5))
+        disableButton.tap()
+
+        let disabledRow = app.buttons["payment_method_row_UI测试钱包"].firstMatch
+        XCTAssertTrue(disabledRow.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["停用"].exists)
+    }
+
     func navigateToImport(source: String) {
         XCTAssertTrue(app.waitForMingZhangTab("首页").exists)
         app.waitForMingZhangTab("首页").tap()
