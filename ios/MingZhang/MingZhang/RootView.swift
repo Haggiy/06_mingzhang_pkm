@@ -4001,16 +4001,18 @@ struct SettingsView: View {
 
                 MZCard(spacing: 0) {
                     NavigationLink {
-                        DataManagementPlaceholderView(title: "数据导出", message: "导出明账数据文件，后续接入备份格式后启用。")
+                        DataExportBackupView()
                     } label: {
-                        MZIconRow(title: "数据导出", subtitle: "导出明账数据文件", systemImage: "square.and.arrow.up")
+                        MZIconRow(title: "数据导出", subtitle: "审计 CSV 与完整备份", systemImage: "square.and.arrow.up")
                     }
+                    .accessibilityIdentifier("settings_data_export")
                     MZDivider()
                     NavigationLink {
-                        DataManagementPlaceholderView(title: "数据导入", message: "仅用于新明账自己的数据文件，不用于支付宝/微信账单。")
+                        DataRestoreView()
                     } label: {
-                        MZIconRow(title: "数据导入", subtitle: "导入明账数据文件", systemImage: "square.and.arrow.down")
+                        MZIconRow(title: "数据恢复", subtitle: "从新明账备份文件恢复", systemImage: "arrow.clockwise")
                     }
+                    .accessibilityIdentifier("settings_data_restore")
                     MZDivider()
                     NavigationLink {
                         DataClearConfirmView()
@@ -4566,6 +4568,293 @@ private func parseSemanticTags(_ value: String) -> [String] {
         tags.append(tag)
     }
     return tags
+}
+
+struct DataExportBackupView: View {
+    @EnvironmentObject private var store: LedgerStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: "数据导出")
+            MZPage {
+                MZCard {
+                    Text("导出审计数据")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                    Text("生成 UTF-8 CSV，包含流水、来源和追溯字段。")
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                    MZLightButton(title: "导出审计 CSV", systemImage: "doc.text") {
+                        _ = store.exportAuditData()
+                    }
+                    .accessibilityIdentifier("audit_export_button")
+
+                    if let url = store.auditExportURL {
+                        ShareLink(item: url) {
+                            MZIconRow(title: "分享审计 CSV", subtitle: url.lastPathComponent, systemImage: "square.and.arrow.up")
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("audit_export_share")
+                    }
+                }
+
+                MZCard {
+                    Text("完整备份")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                    Text("生成 .mzbackup 文件，包含配置、流水、导入候选和投资明细。")
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                    MZLightButton(title: "创建完整备份", systemImage: "externaldrive") {
+                        _ = store.createBackupPackage()
+                    }
+                    .accessibilityIdentifier("backup_create_button")
+
+                    if let validation = store.backupValidation, validation.isValid, let manifest = validation.manifest {
+                        MZDivider()
+                        BackupManifestSummaryView(manifest: manifest)
+                    }
+
+                    if let url = store.backupPackageURL {
+                        ShareLink(item: url) {
+                            MZIconRow(title: "分享备份文件", subtitle: url.lastPathComponent, systemImage: "square.and.arrow.up")
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("backup_share_button")
+                    }
+                }
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+    }
+}
+
+struct DataRestoreView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @State private var isShowingImporter = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: "数据恢复")
+            MZPage {
+                MZCard {
+                    Text("选择备份文件")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                    Text("仅支持新明账 .mzbackup 或 JSON 备份文件。")
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
+
+                    MZLightButton(title: "选择备份文件", systemImage: "folder") {
+                        isShowingImporter = true
+                    }
+                    .accessibilityIdentifier("restore_file_picker_button")
+
+                    if store.isUITesting {
+                        HStack(spacing: 10) {
+                            MZLightButton(title: "测试有效备份", systemImage: "checkmark.seal") {
+                                _ = store.prepareUITestRestoreBackup(valid: true)
+                            }
+                            .accessibilityIdentifier("restore_test_valid_backup_button")
+                            MZLightButton(title: "测试坏备份", systemImage: "xmark.octagon") {
+                                _ = store.prepareUITestRestoreBackup(valid: false)
+                            }
+                            .accessibilityIdentifier("restore_test_invalid_backup_button")
+                        }
+                    }
+                }
+
+                if let fileName = store.pendingBackupFileName {
+                    MZCard {
+                        SummaryLine(title: "文件", value: fileName)
+                    }
+                }
+
+                if let validation = store.backupValidation {
+                    if validation.isValid, let manifest = validation.manifest {
+                        MZCard {
+                            Text("校验通过")
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(MZTheme.ink)
+                            BackupManifestSummaryView(manifest: manifest)
+                            NavigationLink {
+                                DataRestoreConfirmView()
+                            } label: {
+                                MZIconRow(title: "进入恢复确认", subtitle: "恢复会覆盖当前本机账本", systemImage: "arrow.clockwise", tint: MZTheme.danger)
+                            }
+                            .accessibilityIdentifier("restore_preview_button")
+                        }
+                    } else {
+                        MZCard {
+                            Text("校验失败")
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(MZTheme.danger)
+                            ForEach(validation.errors, id: \.self) { error in
+                                Text(error)
+                                    .font(.subheadline)
+                                    .foregroundStyle(MZTheme.secondaryInk)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .accessibilityIdentifier("restore_validation_failed")
+                    }
+                }
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+        .fileImporter(
+            isPresented: $isShowingImporter,
+            allowedContentTypes: backupContentTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    _ = store.validateBackupFile(at: url)
+                }
+            case .failure(let error):
+                store.lastError = error.localizedDescription
+            }
+        }
+    }
+
+    private var backupContentTypes: [UTType] {
+        [UTType(filenameExtension: "mzbackup"), .json]
+            .compactMap { $0 }
+    }
+}
+
+struct DataRestoreConfirmView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @State private var confirmText = ""
+    @State private var isShowingResult = false
+    private let requiredText = "恢复数据 继续"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: "恢复前确认")
+            MZPage {
+                MZCard {
+                    Text("覆盖当前本机账本")
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(MZTheme.danger)
+                    Text("恢复会替换当前配置、流水、导入候选和投资明细。恢复失败时当前数据不会被修改。")
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let manifest = store.backupValidation?.manifest {
+                    MZCard {
+                        BackupManifestSummaryView(manifest: manifest)
+                    }
+                }
+
+                MZCard {
+                    Text("请输入以下文字以确认操作")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                    MZFieldRow(title: "确认文字") {
+                        TextField("输入 \(requiredText)", text: $confirmText, axis: .vertical)
+                            .lineLimit(2, reservesSpace: true)
+                            .padding(12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(MZTheme.card)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .stroke(MZTheme.line, lineWidth: 0.8)
+                            )
+                            .accessibilityIdentifier("restore_confirm_text_field")
+                    }
+                    Text("\(confirmText.count)/\(requiredText.count)")
+                        .font(.caption)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+
+                MZDestructiveButton(title: "确认恢复", isDisabled: confirmText != requiredText) {
+                    _ = store.restoreValidatedBackup()
+                    isShowingResult = true
+                }
+                .accessibilityIdentifier("restore_confirm_button")
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+        .navigationDestination(isPresented: $isShowingResult) {
+            DataRestoreResultView()
+                .environmentObject(store)
+        }
+    }
+}
+
+struct DataRestoreResultView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: "恢复结果")
+            MZPage {
+                if let result = store.restoreResult {
+                    MZCard {
+                        MZEmptyState(title: "恢复完成", systemImage: "checkmark.circle", subtitle: "核心账本、配置和追溯信息已恢复。")
+                        BackupRecordCountsView(counts: result.recordCounts)
+                        SummaryLine(title: "可用账月", value: result.restoredAccountMonths.joined(separator: "、"))
+                    }
+                    .accessibilityIdentifier("restore_result_success")
+                } else {
+                    MZCard {
+                        MZEmptyState(
+                            title: "恢复失败",
+                            systemImage: "xmark.octagon",
+                            subtitle: store.restoreFailureMessage ?? "恢复失败，当前数据未被修改。"
+                        )
+                    }
+                    .accessibilityIdentifier("restore_result_failure")
+                }
+
+                MZLightButton(title: "完成", systemImage: "checkmark") {
+                    dismiss()
+                }
+                .accessibilityIdentifier("restore_result_done_button")
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+    }
+}
+
+private struct BackupManifestSummaryView: View {
+    let manifest: BackupManifest
+
+    var body: some View {
+        VStack(spacing: 8) {
+            SummaryLine(title: "备份版本", value: "\(manifest.backupSchemaVersion)")
+            SummaryLine(title: "数据版本", value: manifest.appDataSchemaVersion)
+            SummaryLine(title: "导出时间", value: manifest.exportedAt.fullText)
+            SummaryLine(title: "校验", value: manifest.payloadChecksum)
+            BackupRecordCountsView(counts: manifest.recordCounts)
+        }
+    }
+}
+
+private struct BackupRecordCountsView: View {
+    let counts: BackupRecordCounts
+
+    var body: some View {
+        VStack(spacing: 6) {
+            SummaryLine(title: "配置", value: "\(counts.paymentMethods + counts.paymentTypes + counts.paymentDetails)")
+            SummaryLine(title: "流水", value: "\(counts.journalRecords)")
+            SummaryLine(title: "导入批次", value: "\(counts.importBatches)")
+            SummaryLine(title: "导入候选", value: "\(counts.importCandidates)")
+            SummaryLine(title: "投资交易", value: "\(counts.investmentTransactions)")
+        }
+    }
 }
 
 struct DataManagementPlaceholderView: View {

@@ -149,6 +149,20 @@ final class ImportMemoryUITests: XCTestCase {
         button.tap()
     }
 
+    @discardableResult
+    func waitForAnyElement(identifier: String, timeout: TimeInterval = 5) -> XCUIElement {
+        let element = app.descendants(matching: .any)[identifier].firstMatch
+        XCTAssertTrue(element.waitForExistence(timeout: timeout), "应存在元素 \(identifier)")
+        return element
+    }
+
+    func navigateToDataRestore() {
+        app.waitForMingZhangTab("设置").tap()
+        XCTAssertTrue(app.staticTexts["记账配置"].waitForExistence(timeout: 5))
+        tapVisibleButton(identifier: "settings_data_restore")
+        XCTAssertTrue(app.staticTexts["数据恢复"].waitForExistence(timeout: 5))
+    }
+
     // MARK: - 导航
 
     func testV51PrimaryTabsExposeCoreSectionsAndQuickMenu() {
@@ -359,6 +373,43 @@ final class ImportMemoryUITests: XCTestCase {
         let disabledRow = app.buttons["payment_method_row_UI测试钱包"].firstMatch
         XCTAssertTrue(disabledRow.waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["停用"].exists)
+    }
+
+    func testBackupRestoreFlowUsesConfirmationAndShowsSuccess() {
+        continueAfterFailure = false
+        app.launch()
+
+        app.waitForMingZhangTab("设置").tap()
+        XCTAssertTrue(app.staticTexts["记账配置"].waitForExistence(timeout: 5))
+        tapVisibleButton(identifier: "settings_data_export")
+        XCTAssertTrue(app.staticTexts["数据导出"].waitForExistence(timeout: 5))
+        tapVisibleButton(identifier: "backup_create_button")
+        waitForAnyElement(identifier: "backup_share_button")
+        tapBackButton()
+
+        navigateToDataRestore()
+        tapVisibleButton(identifier: "restore_test_valid_backup_button")
+        tapVisibleButton(identifier: "restore_preview_button")
+        XCTAssertTrue(app.staticTexts["恢复前确认"].waitForExistence(timeout: 5))
+
+        let confirmField = app.textFields["restore_confirm_text_field"].firstMatch
+        XCTAssertTrue(confirmField.waitForExistence(timeout: 5))
+        confirmField.tap()
+        confirmField.typeText("恢复数据 继续")
+
+        tapVisibleButton(identifier: "restore_confirm_button")
+        waitForAnyElement(identifier: "restore_result_success", timeout: 10)
+        tapVisibleButton(identifier: "restore_result_done_button")
+    }
+
+    func testBackupRestoreRejectsInvalidBackupWithoutChangingData() {
+        continueAfterFailure = false
+        app.launch()
+
+        navigateToDataRestore()
+        tapVisibleButton(identifier: "restore_test_invalid_backup_button")
+        waitForAnyElement(identifier: "restore_validation_failed")
+        XCTAssertTrue(app.staticTexts["校验失败"].exists)
     }
 
     func navigateToImport(source: String) {

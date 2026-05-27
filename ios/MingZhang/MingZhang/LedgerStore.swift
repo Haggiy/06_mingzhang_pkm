@@ -39,6 +39,15 @@ final class LedgerStore: ObservableObject {
     @Published private(set) var importIssues: [ImportIssue] = []
     @Published var selectedImportCandidateIds: Set<UUID> = []
     @Published var lastError: String?
+    @Published private(set) var isDataManagementBusy = false
+    @Published private(set) var auditExportURL: URL?
+    @Published private(set) var backupPackageURL: URL?
+    @Published private(set) var backupValidation: BackupValidationResult?
+    @Published private(set) var restoreResult: BackupRestoreResult?
+    @Published private(set) var restoreFailureMessage: String?
+    @Published private(set) var pendingBackupFileName: String?
+
+    private var pendingBackupData: Data?
 
     var userVisibleMethods: [PaymentMethod] {
         methods.filter { $0.methodType != .pendingRealAccount }
@@ -55,6 +64,10 @@ final class LedgerStore: ObservableObject {
     var activePaymentDetails: [PaymentDetail] {
         let activeTypeIds = Set(activePaymentTypes.map(\.id))
         return details.filter { $0.isActive && activeTypeIds.contains($0.paymentTypeId) }
+    }
+
+    var isUITesting: Bool {
+        useInMemory
     }
 
     private var useCases: LedgerUseCases?
@@ -131,6 +144,10 @@ final class LedgerStore: ObservableObject {
                 _ = try useCases.createInvestmentTransaction(input: input)
             }
             try refresh()
+        }
+
+        if let restoreScenario = env["MZ_RESTORE_TEST_SCENARIO"] {
+            _ = prepareUITestRestoreBackup(valid: restoreScenario != "invalid")
         }
     }
 
@@ -539,6 +556,144 @@ final class LedgerStore: ObservableObject {
         }
     }
 
+    func exportAuditData() -> Bool {
+        do {
+            isDataManagementBusy = true
+            defer { isDataManagementBusy = false }
+            guard let useCases else { return false }
+            let result = try useCases.exportAuditData()
+            auditExportURL = try writeTemporaryFile(data: result.data, fileName: result.fileName)
+            lastError = nil
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func createBackupPackage() -> Bool {
+        do {
+            isDataManagementBusy = true
+            defer { isDataManagementBusy = false }
+            guard let useCases else { return false }
+            let result = try useCases.createBackupPackage()
+            backupPackageURL = try writeTemporaryFile(data: result.data, fileName: result.fileName)
+            pendingBackupData = result.data
+            pendingBackupFileName = result.fileName
+            backupValidation = try useCases.validateBackupPackage(data: result.data)
+            restoreResult = nil
+            restoreFailureMessage = nil
+            lastError = nil
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func validateBackupFile(at url: URL) -> Bool {
+        let didAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if didAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+        do {
+            let data = try Data(contentsOf: url)
+            return validateBackupData(data, fileName: url.lastPathComponent)
+        } catch {
+            backupValidation = BackupValidationResult(
+                isValid: false,
+                manifest: nil,
+                preview: nil,
+                errors: ["备份文件读取失败：\(error.localizedDescription)"]
+            )
+            pendingBackupData = nil
+            pendingBackupFileName = url.lastPathComponent
+            restoreResult = nil
+            restoreFailureMessage = nil
+            lastError = nil
+            return false
+        }
+    }
+
+    func validateBackupData(_ data: Data, fileName: String) -> Bool {
+        do {
+            guard let useCases else { return false }
+            let validation = try useCases.validateBackupPackage(data: data)
+            backupValidation = validation
+            pendingBackupData = validation.isValid ? data : nil
+            pendingBackupFileName = fileName
+            restoreResult = nil
+            restoreFailureMessage = nil
+            lastError = nil
+            return validation.isValid
+        } catch {
+            backupValidation = BackupValidationResult(
+                isValid: false,
+                manifest: nil,
+                preview: nil,
+                errors: [error.localizedDescription]
+            )
+            pendingBackupData = nil
+            pendingBackupFileName = fileName
+            restoreResult = nil
+            restoreFailureMessage = nil
+            lastError = nil
+            return false
+        }
+    }
+
+    func restoreValidatedBackup() -> Bool {
+        do {
+            isDataManagementBusy = true
+            defer { isDataManagementBusy = false }
+            guard let useCases, let pendingBackupData else {
+                throw MingZhangError.validation("请先选择并校验备份文件")
+            }
+            let result = try useCases.restoreBackupPackage(data: pendingBackupData, confirmed: true)
+            restoreResult = result
+            restoreFailureMessage = nil
+            self.pendingBackupData = nil
+            try refresh()
+            return true
+        } catch {
+            restoreResult = nil
+            restoreFailureMessage = "恢复失败，当前数据未被修改。\(error.localizedDescription)"
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func clearBackupFlow() {
+        backupValidation = nil
+        restoreResult = nil
+        restoreFailureMessage = nil
+        pendingBackupData = nil
+        pendingBackupFileName = nil
+    }
+
+    func prepareUITestRestoreBackup(valid: Bool) -> Bool {
+        guard useInMemory else { return false }
+        do {
+            guard let useCases else { return false }
+            let data: Data
+            let fileName: String
+            if valid {
+                let package = try useCases.createBackupPackage()
+                data = package.data
+                fileName = package.fileName
+            } else {
+                data = Data("{\"format\":\"mingzhang.backup\",\"broken\":true}".utf8)
+                fileName = "broken.mzbackup"
+            }
+            return validateBackupData(data, fileName: fileName)
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
     private static func databaseURL() throws -> URL {
         let directory = try FileManager.default.url(
             for: .documentDirectory,
@@ -547,6 +702,14 @@ final class LedgerStore: ObservableObject {
             create: true
         )
         return directory.appendingPathComponent("MingZhang.sqlite")
+    }
+
+    private func writeTemporaryFile(data: Data, fileName: String) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("MingZhangExports", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(fileName)
+        try data.write(to: url, options: .atomic)
+        return url
     }
 
     private func replaceImportCandidates(with updated: [ImportCandidateRecord]) {

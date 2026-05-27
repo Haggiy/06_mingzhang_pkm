@@ -1669,6 +1669,124 @@ public final class LedgerUseCases: @unchecked Sendable {
         )
     }
 
+    public func exportAuditData() throws -> AuditExportResult {
+        let exportedAt = Date()
+        let records = try database.writer.read { db in
+            try Row.fetchAll(
+                db,
+                sql: selectJournalRecordSQL + """
+                 ORDER BY journal_records.account_month ASC,
+                          journal_records.occurred_at ASC,
+                          journal_records.created_at ASC,
+                          journal_records.id ASC
+                """
+            ).map(journalRecord(from:))
+        }
+
+        var lines: [String] = [
+            [
+                "id",
+                "账月",
+                "时间",
+                "收付手段",
+                "金额",
+                "收付类型",
+                "类型明细",
+                "备注",
+                "记录来源",
+                "record_kind",
+                "carry_forward_role",
+                "engine_family",
+                "engine_key",
+                "object_key",
+                "source_record_ids",
+                "source_import_batch_id",
+                "source_import_candidate_id",
+                "source_investment_transaction_ids",
+                "created_at",
+                "updated_at"
+            ].map(csvEscape).joined(separator: ",")
+        ]
+
+        for record in records {
+            lines.append([
+                record.id.uuidString,
+                record.accountMonth,
+                encodeDate(record.occurredAt),
+                record.paymentMethodName,
+                encodeDecimal(record.amount),
+                record.paymentTypeName,
+                record.paymentDetailName,
+                record.note ?? "",
+                record.recordSource.rawValue,
+                record.recordKind.rawValue,
+                record.carryForwardRole.rawValue,
+                record.engineFamily?.rawValue ?? "",
+                record.engineKey ?? "",
+                record.objectKey ?? "",
+                encodeUUIDList(record.sourceRecordIds),
+                record.sourceImportBatchId?.uuidString ?? "",
+                record.sourceImportCandidateId?.uuidString ?? "",
+                encodeUUIDList(record.sourceInvestmentTransactionIds),
+                encodeDate(record.createdAt),
+                encodeDate(record.updatedAt)
+            ].map(csvEscape).joined(separator: ","))
+        }
+
+        let csv = lines.joined(separator: "\n") + "\n"
+        return AuditExportResult(
+            data: Data(csv.utf8),
+            fileName: "mingzhang-audit-\(fileTimestamp(exportedAt)).csv",
+            exportedAt: exportedAt
+        )
+    }
+
+    public func createBackupPackage() throws -> BackupPackageResult {
+        let exportedAt = dateRoundedToWholeSeconds(Date())
+        let payload = try database.writer.read { db in
+            try fetchBackupPayload(db)
+        }
+        let payloadChecksum = try checksum(for: payload)
+        let manifest = BackupManifest(
+            backupSchemaVersion: currentBackupSchemaVersion,
+            appDataSchemaVersion: currentAppDataSchemaVersion,
+            exportedAt: exportedAt,
+            appVersion: nil,
+            recordCounts: payload.recordCounts,
+            payloadChecksum: payloadChecksum
+        )
+        let package = MingZhangBackupPackage(format: backupPackageFormat, manifest: manifest, payload: payload)
+        let data = try backupJSONEncoder().encode(package)
+        return BackupPackageResult(
+            data: data,
+            fileName: "mingzhang-backup-\(fileTimestamp(exportedAt)).mzbackup",
+            manifest: manifest
+        )
+    }
+
+    public func validateBackupPackage(data: Data) throws -> BackupValidationResult {
+        try inspectBackupPackage(data).result
+    }
+
+    public func restoreBackupPackage(data: Data, confirmed: Bool) throws -> BackupRestoreResult {
+        guard confirmed else {
+            throw MingZhangError.validation("恢复前必须明确确认")
+        }
+        let inspected = try inspectBackupPackage(data)
+        guard inspected.result.isValid, let package = inspected.package, let preview = inspected.result.preview else {
+            throw MingZhangError.validation(inspected.result.errors.joined(separator: "；"))
+        }
+
+        try database.writer.write { db in
+            try replaceBackupPayload(package.payload, in: db)
+        }
+
+        return BackupRestoreResult(
+            recordCounts: package.manifest.recordCounts,
+            restoredAccountMonths: preview.accountMonths
+        )
+    }
+
     public func recalculateAfterMutation(_ mutation: Mutation) throws -> EngineRecalculationResult {
         let record = try database.writer.read { db in
             try requireJournalRecord(db, id: mutation.recordId)
@@ -1847,6 +1965,157 @@ private struct PaymentDetailSeed {
     var configDescription: String?
 }
 
+private let backupPackageFormat = "mingzhang.backup"
+private let currentBackupSchemaVersion = 1
+private let currentAppDataSchemaVersion = "v4_p1_settings_semantics"
+
+private struct MingZhangBackupPackage: Codable, Equatable {
+    var format: String
+    var manifest: BackupManifest
+    var payload: BackupPayload
+}
+
+private struct BackupPayload: Codable, Equatable {
+    var paymentMethods: [BackupPaymentMethodRow]
+    var paymentTypes: [BackupPaymentTypeRow]
+    var paymentDetails: [BackupPaymentDetailRow]
+    var importBatches: [BackupImportBatchRow]
+    var investmentTransactions: [BackupInvestmentTransactionRow]
+    var journalRecords: [BackupJournalRecordRow]
+    var importCandidates: [BackupImportCandidateRow]
+
+    var recordCounts: BackupRecordCounts {
+        BackupRecordCounts(
+            paymentMethods: paymentMethods.count,
+            paymentTypes: paymentTypes.count,
+            paymentDetails: paymentDetails.count,
+            importBatches: importBatches.count,
+            investmentTransactions: investmentTransactions.count,
+            journalRecords: journalRecords.count,
+            importCandidates: importCandidates.count
+        )
+    }
+
+    var accountMonths: [String] {
+        Array(Set(journalRecords.map(\.accountMonth)))
+            .sorted(by: >)
+    }
+}
+
+private struct BackupPaymentMethodRow: Codable, Equatable {
+    var id: String
+    var name: String
+    var methodType: String
+    var isActive: Bool
+    var semanticTags: String
+    var configVersion: Int
+    var seedKey: String?
+    var createdAt: String
+    var updatedAt: String
+}
+
+private struct BackupPaymentTypeRow: Codable, Equatable {
+    var id: String
+    var name: String
+    var element: String
+    var isActive: Bool
+    var semanticTags: String
+    var configDescription: String?
+    var configVersion: Int
+    var seedKey: String?
+    var createdAt: String
+    var updatedAt: String
+}
+
+private struct BackupPaymentDetailRow: Codable, Equatable {
+    var id: String
+    var name: String
+    var paymentTypeId: String
+    var isActive: Bool
+    var semanticTags: String
+    var configDescription: String?
+    var configVersion: Int
+    var seedKey: String?
+    var createdAt: String
+    var updatedAt: String
+}
+
+private struct BackupImportBatchRow: Codable, Equatable {
+    var id: String
+    var source: String
+    var fileName: String?
+    var importedAt: String
+    var status: String
+    var confirmedRecordCount: Int
+}
+
+private struct BackupInvestmentTransactionRow: Codable, Equatable {
+    var id: String
+    var accountMonth: String
+    var occurredAt: String
+    var fundName: String
+    var transactionType: String
+    var tradeAmount: String?
+    var tradeShare: String?
+    var nav: String?
+    var note: String?
+    var bookAmount: String?
+    var realizedGain: String
+    var realizedLoss: String
+    var holdingShare: String
+    var averageCost: String?
+    var bookValue: String
+    var presentValue: String?
+    var createdAt: String
+    var updatedAt: String
+}
+
+private struct BackupJournalRecordRow: Codable, Equatable {
+    var id: String
+    var accountMonth: String
+    var occurredAt: String
+    var paymentMethodId: String
+    var amount: String
+    var paymentTypeId: String
+    var paymentDetailId: String
+    var note: String?
+    var recordSource: String
+    var recordKind: String
+    var carryForwardRole: String
+    var engineFamily: String?
+    var engineKey: String?
+    var objectKey: String?
+    var sourceRecordIds: String
+    var sourceInvestmentTransactionIds: String
+    var sourceImportBatchId: String?
+    var sourceImportCandidateId: String?
+    var createdAt: String
+    var updatedAt: String
+}
+
+private struct BackupImportCandidateRow: Codable, Equatable {
+    var id: String
+    var batchId: String
+    var status: String
+    var accountMonth: String
+    var occurredAt: String
+    var paymentMethodId: String?
+    var paymentMethodName: String?
+    var amount: String
+    var paymentTypeId: String?
+    var paymentTypeName: String?
+    var paymentDetailId: String?
+    var paymentDetailName: String?
+    var note: String?
+    var rawLineNumber: Int
+    var rawPayload: String
+    var rawTransactionId: String?
+    var rawFingerprint: String
+    var createdJournalRecordId: String?
+    var createdAt: String
+    var updatedAt: String
+}
+
 private let paymentMethodSeeds: [PaymentMethodSeed] = [
     PaymentMethodSeed(seedKey: "cash", name: "现金", methodType: .asset, semanticTags: ["资产型"]),
     PaymentMethodSeed(seedKey: "wallet", name: "电子钱包余额", methodType: .asset, semanticTags: ["资产型"]),
@@ -1958,6 +2227,233 @@ private let selectJournalRecordSQL = """
     JOIN payment_types ON payment_types.id = journal_records.payment_type_id
     JOIN payment_details ON payment_details.id = journal_records.payment_detail_id
     """
+
+private func fetchBackupPayload(_ db: Database) throws -> BackupPayload {
+    BackupPayload(
+        paymentMethods: try Row.fetchAll(db, sql: """
+            SELECT id, name, method_type, is_active, semantic_tags, config_version, seed_key, created_at, updated_at
+            FROM payment_methods
+            ORDER BY name ASC, id ASC
+            """).map(backupPaymentMethod(from:)),
+        paymentTypes: try Row.fetchAll(db, sql: """
+            SELECT id, name, element, is_active, semantic_tags, config_description, config_version, seed_key, created_at, updated_at
+            FROM payment_types
+            ORDER BY name ASC, id ASC
+            """).map(backupPaymentType(from:)),
+        paymentDetails: try Row.fetchAll(db, sql: """
+            SELECT id, name, payment_type_id, is_active, semantic_tags, config_description, config_version, seed_key, created_at, updated_at
+            FROM payment_details
+            ORDER BY payment_type_id ASC, name ASC, id ASC
+            """).map(backupPaymentDetail(from:)),
+        importBatches: try Row.fetchAll(db, sql: """
+            SELECT id, source, file_name, imported_at, status, confirmed_record_count
+            FROM import_batches
+            ORDER BY imported_at ASC, id ASC
+            """).map(backupImportBatch(from:)),
+        investmentTransactions: try Row.fetchAll(db, sql: """
+            SELECT id, account_month, occurred_at, fund_name, transaction_type,
+                   trade_amount, trade_share, nav, note, book_amount, realized_gain,
+                   realized_loss, holding_share, average_cost, book_value, present_value,
+                   created_at, updated_at
+            FROM investment_transactions
+            ORDER BY fund_name ASC, occurred_at ASC, created_at ASC, id ASC
+            """).map(backupInvestmentTransaction(from:)),
+        journalRecords: try Row.fetchAll(db, sql: """
+            SELECT id, account_month, occurred_at, payment_method_id, amount, payment_type_id,
+                   payment_detail_id, note, record_source, record_kind, carry_forward_role,
+                   engine_family, engine_key, object_key, source_record_ids,
+                   source_investment_transaction_ids, source_import_batch_id,
+                   source_import_candidate_id, created_at, updated_at
+            FROM journal_records
+            ORDER BY account_month ASC, occurred_at ASC, created_at ASC, id ASC
+            """).map(backupJournalRecord(from:)),
+        importCandidates: try Row.fetchAll(db, sql: """
+            SELECT id, batch_id, status, account_month, occurred_at, payment_method_id,
+                   payment_method_name, amount, payment_type_id, payment_type_name,
+                   payment_detail_id, payment_detail_name, note, raw_line_number,
+                   raw_payload, raw_transaction_id, raw_fingerprint, created_journal_record_id,
+                   created_at, updated_at
+            FROM import_candidates
+            ORDER BY batch_id ASC, occurred_at ASC, raw_line_number ASC, id ASC
+            """).map(backupImportCandidate(from:))
+    )
+}
+
+private func replaceBackupPayload(_ payload: BackupPayload, in db: Database) throws {
+    try db.execute(sql: "DELETE FROM import_candidates")
+    try db.execute(sql: "DELETE FROM journal_records")
+    try db.execute(sql: "DELETE FROM investment_transactions")
+    try db.execute(sql: "DELETE FROM import_batches")
+    try db.execute(sql: "DELETE FROM payment_details")
+    try db.execute(sql: "DELETE FROM payment_types")
+    try db.execute(sql: "DELETE FROM payment_methods")
+
+    for row in payload.paymentMethods {
+        try db.execute(sql: """
+            INSERT INTO payment_methods (id, name, method_type, is_active, semantic_tags, config_version, seed_key, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [
+                row.id,
+                row.name,
+                row.methodType,
+                row.isActive,
+                row.semanticTags,
+                row.configVersion,
+                row.seedKey,
+                row.createdAt,
+                row.updatedAt
+            ])
+    }
+
+    for row in payload.paymentTypes {
+        try db.execute(sql: """
+            INSERT INTO payment_types (id, name, element, is_active, semantic_tags, config_description, config_version, seed_key, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [
+                row.id,
+                row.name,
+                row.element,
+                row.isActive,
+                row.semanticTags,
+                row.configDescription,
+                row.configVersion,
+                row.seedKey,
+                row.createdAt,
+                row.updatedAt
+            ])
+    }
+
+    for row in payload.paymentDetails {
+        try db.execute(sql: """
+            INSERT INTO payment_details (id, name, payment_type_id, is_active, semantic_tags, config_description, config_version, seed_key, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [
+                row.id,
+                row.name,
+                row.paymentTypeId,
+                row.isActive,
+                row.semanticTags,
+                row.configDescription,
+                row.configVersion,
+                row.seedKey,
+                row.createdAt,
+                row.updatedAt
+            ])
+    }
+
+    for row in payload.importBatches {
+        try db.execute(sql: """
+            INSERT INTO import_batches (id, source, file_name, imported_at, status, confirmed_record_count)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, arguments: [
+                row.id,
+                row.source,
+                row.fileName,
+                row.importedAt,
+                row.status,
+                row.confirmedRecordCount
+            ])
+    }
+
+    for row in payload.investmentTransactions {
+        try db.execute(sql: """
+            INSERT INTO investment_transactions (
+                id, account_month, occurred_at, fund_name, transaction_type,
+                trade_amount, trade_share, nav, note, book_amount, realized_gain,
+                realized_loss, holding_share, average_cost, book_value, present_value,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [
+                row.id,
+                row.accountMonth,
+                row.occurredAt,
+                row.fundName,
+                row.transactionType,
+                row.tradeAmount,
+                row.tradeShare,
+                row.nav,
+                row.note,
+                row.bookAmount,
+                row.realizedGain,
+                row.realizedLoss,
+                row.holdingShare,
+                row.averageCost,
+                row.bookValue,
+                row.presentValue,
+                row.createdAt,
+                row.updatedAt
+            ])
+    }
+
+    for row in payload.journalRecords {
+        try db.execute(sql: """
+            INSERT INTO journal_records (
+                id, account_month, occurred_at, payment_method_id, amount, payment_type_id,
+                payment_detail_id, note, record_source, record_kind, carry_forward_role,
+                engine_family, engine_key, object_key, source_record_ids,
+                source_investment_transaction_ids, source_import_batch_id,
+                source_import_candidate_id, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [
+                row.id,
+                row.accountMonth,
+                row.occurredAt,
+                row.paymentMethodId,
+                row.amount,
+                row.paymentTypeId,
+                row.paymentDetailId,
+                row.note,
+                row.recordSource,
+                row.recordKind,
+                row.carryForwardRole,
+                row.engineFamily,
+                row.engineKey,
+                row.objectKey,
+                row.sourceRecordIds,
+                row.sourceInvestmentTransactionIds,
+                row.sourceImportBatchId,
+                row.sourceImportCandidateId,
+                row.createdAt,
+                row.updatedAt
+            ])
+    }
+
+    for row in payload.importCandidates {
+        try db.execute(sql: """
+            INSERT INTO import_candidates (
+                id, batch_id, status, account_month, occurred_at, payment_method_id,
+                payment_method_name, amount, payment_type_id, payment_type_name,
+                payment_detail_id, payment_detail_name, note, raw_line_number,
+                raw_payload, raw_transaction_id, raw_fingerprint, created_journal_record_id,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [
+                row.id,
+                row.batchId,
+                row.status,
+                row.accountMonth,
+                row.occurredAt,
+                row.paymentMethodId,
+                row.paymentMethodName,
+                row.amount,
+                row.paymentTypeId,
+                row.paymentTypeName,
+                row.paymentDetailId,
+                row.paymentDetailName,
+                row.note,
+                row.rawLineNumber,
+                row.rawPayload,
+                row.rawTransactionId,
+                row.rawFingerprint,
+                row.createdJournalRecordId,
+                row.createdAt,
+                row.updatedAt
+            ])
+    }
+}
 
 private func sqlPlaceholders(_ count: Int) -> String {
     "(\(Array(repeating: "?", count: count).joined(separator: ",")))"
@@ -3355,6 +3851,50 @@ private func paymentDetail(from row: Row) throws -> PaymentDetail {
     )
 }
 
+private func backupPaymentMethod(from row: Row) throws -> BackupPaymentMethodRow {
+    BackupPaymentMethodRow(
+        id: row["id"],
+        name: row["name"],
+        methodType: row["method_type"],
+        isActive: row["is_active"],
+        semanticTags: row["semantic_tags"],
+        configVersion: row["config_version"],
+        seedKey: row["seed_key"],
+        createdAt: row["created_at"],
+        updatedAt: row["updated_at"]
+    )
+}
+
+private func backupPaymentType(from row: Row) throws -> BackupPaymentTypeRow {
+    BackupPaymentTypeRow(
+        id: row["id"],
+        name: row["name"],
+        element: row["element"],
+        isActive: row["is_active"],
+        semanticTags: row["semantic_tags"],
+        configDescription: row["config_description"],
+        configVersion: row["config_version"],
+        seedKey: row["seed_key"],
+        createdAt: row["created_at"],
+        updatedAt: row["updated_at"]
+    )
+}
+
+private func backupPaymentDetail(from row: Row) throws -> BackupPaymentDetailRow {
+    BackupPaymentDetailRow(
+        id: row["id"],
+        name: row["name"],
+        paymentTypeId: row["payment_type_id"],
+        isActive: row["is_active"],
+        semanticTags: row["semantic_tags"],
+        configDescription: row["config_description"],
+        configVersion: row["config_version"],
+        seedKey: row["seed_key"],
+        createdAt: row["created_at"],
+        updatedAt: row["updated_at"]
+    )
+}
+
 private func importBatch(from row: Row) throws -> ImportBatch {
     let sourceValue: String = row["source"]
     let statusValue: String = row["status"]
@@ -3364,6 +3904,17 @@ private func importBatch(from row: Row) throws -> ImportBatch {
         fileName: row["file_name"],
         importedAt: try decodeDate(row["imported_at"]),
         status: ImportBatchStatus(rawValue: statusValue) ?? .draft,
+        confirmedRecordCount: row["confirmed_record_count"]
+    )
+}
+
+private func backupImportBatch(from row: Row) throws -> BackupImportBatchRow {
+    BackupImportBatchRow(
+        id: row["id"],
+        source: row["source"],
+        fileName: row["file_name"],
+        importedAt: row["imported_at"],
+        status: row["status"],
         confirmedRecordCount: row["confirmed_record_count"]
     )
 }
@@ -3392,6 +3943,31 @@ private func importCandidate(from row: Row) throws -> ImportCandidateRecord {
     )
 }
 
+private func backupImportCandidate(from row: Row) throws -> BackupImportCandidateRow {
+    BackupImportCandidateRow(
+        id: row["id"],
+        batchId: row["batch_id"],
+        status: row["status"],
+        accountMonth: row["account_month"],
+        occurredAt: row["occurred_at"],
+        paymentMethodId: row["payment_method_id"],
+        paymentMethodName: row["payment_method_name"],
+        amount: row["amount"],
+        paymentTypeId: row["payment_type_id"],
+        paymentTypeName: row["payment_type_name"],
+        paymentDetailId: row["payment_detail_id"],
+        paymentDetailName: row["payment_detail_name"],
+        note: row["note"],
+        rawLineNumber: row["raw_line_number"],
+        rawPayload: row["raw_payload"],
+        rawTransactionId: row["raw_transaction_id"],
+        rawFingerprint: row["raw_fingerprint"],
+        createdJournalRecordId: row["created_journal_record_id"],
+        createdAt: row["created_at"],
+        updatedAt: row["updated_at"]
+    )
+}
+
 private func investmentTransaction(from row: Row) throws -> InvestmentTransaction {
     let typeValue: String = row["transaction_type"]
     return InvestmentTransaction(
@@ -3413,6 +3989,29 @@ private func investmentTransaction(from row: Row) throws -> InvestmentTransactio
         presentValue: decodeOptionalDecimal(row["present_value"]),
         createdAt: try decodeDate(row["created_at"]),
         updatedAt: try decodeDate(row["updated_at"])
+    )
+}
+
+private func backupInvestmentTransaction(from row: Row) throws -> BackupInvestmentTransactionRow {
+    BackupInvestmentTransactionRow(
+        id: row["id"],
+        accountMonth: row["account_month"],
+        occurredAt: row["occurred_at"],
+        fundName: row["fund_name"],
+        transactionType: row["transaction_type"],
+        tradeAmount: row["trade_amount"],
+        tradeShare: row["trade_share"],
+        nav: row["nav"],
+        note: row["note"],
+        bookAmount: row["book_amount"],
+        realizedGain: row["realized_gain"],
+        realizedLoss: row["realized_loss"],
+        holdingShare: row["holding_share"],
+        averageCost: row["average_cost"],
+        bookValue: row["book_value"],
+        presentValue: row["present_value"],
+        createdAt: row["created_at"],
+        updatedAt: row["updated_at"]
     )
 }
 
@@ -3444,6 +4043,31 @@ private func journalRecord(from row: Row) throws -> JournalRecord {
         sourceImportCandidateId: optionalUUID(row["source_import_candidate_id"]),
         createdAt: try decodeDate(row["created_at"]),
         updatedAt: try decodeDate(row["updated_at"])
+    )
+}
+
+private func backupJournalRecord(from row: Row) throws -> BackupJournalRecordRow {
+    BackupJournalRecordRow(
+        id: row["id"],
+        accountMonth: row["account_month"],
+        occurredAt: row["occurred_at"],
+        paymentMethodId: row["payment_method_id"],
+        amount: row["amount"],
+        paymentTypeId: row["payment_type_id"],
+        paymentDetailId: row["payment_detail_id"],
+        note: row["note"],
+        recordSource: row["record_source"],
+        recordKind: row["record_kind"],
+        carryForwardRole: row["carry_forward_role"],
+        engineFamily: row["engine_family"],
+        engineKey: row["engine_key"],
+        objectKey: row["object_key"],
+        sourceRecordIds: row["source_record_ids"],
+        sourceInvestmentTransactionIds: row["source_investment_transaction_ids"],
+        sourceImportBatchId: row["source_import_batch_id"],
+        sourceImportCandidateId: row["source_import_candidate_id"],
+        createdAt: row["created_at"],
+        updatedAt: row["updated_at"]
     )
 }
 
@@ -3526,6 +4150,319 @@ private func decodeStringList(_ value: String?) -> [String] {
         return []
     }
     return decoded
+}
+
+private func backupJSONEncoder() -> JSONEncoder {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    encoder.dateEncodingStrategy = .iso8601
+    return encoder
+}
+
+private func backupJSONDecoder() -> JSONDecoder {
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    return decoder
+}
+
+private func checksum(for payload: BackupPayload) throws -> String {
+    let data = try backupJSONEncoder().encode(payload)
+    return "sha256:\(sha256Hex(data))"
+}
+
+private func sha256Hex(_ data: Data) -> String {
+    SHA256.hash(data: data)
+        .map { String(format: "%02x", $0) }
+        .joined()
+}
+
+private func inspectBackupPackage(_ data: Data) throws -> (package: MingZhangBackupPackage?, result: BackupValidationResult) {
+    let package: MingZhangBackupPackage
+    do {
+        package = try backupJSONDecoder().decode(MingZhangBackupPackage.self, from: data)
+    } catch {
+        let result = BackupValidationResult(
+            isValid: false,
+            manifest: nil,
+            preview: nil,
+            errors: ["备份文件无法解析：\(error.localizedDescription)"]
+        )
+        return (nil, result)
+    }
+
+    var errors: [String] = []
+    if package.format != backupPackageFormat {
+        errors.append("备份文件格式不匹配")
+    }
+    if package.manifest.backupSchemaVersion != currentBackupSchemaVersion {
+        errors.append("不支持的 backup schema version：\(package.manifest.backupSchemaVersion)")
+    }
+    if package.manifest.appDataSchemaVersion != currentAppDataSchemaVersion {
+        errors.append("不支持的数据 schema version：\(package.manifest.appDataSchemaVersion)")
+    }
+    let actualChecksum = try checksum(for: package.payload)
+    if actualChecksum != package.manifest.payloadChecksum {
+        errors.append("payload checksum 校验失败")
+    }
+    errors.append(contentsOf: validateBackupPayload(package.payload, manifest: package.manifest))
+
+    var accountMonths = package.payload.accountMonths
+    if errors.isEmpty {
+        do {
+            let dryRunDatabase = try LedgerDatabase.inMemory()
+            try dryRunDatabase.writer.write { db in
+                try replaceBackupPayload(package.payload, in: db)
+            }
+            let dryRunUseCases = LedgerUseCases(database: dryRunDatabase)
+            accountMonths = try dryRunUseCases.queryAccountMonths()
+            for month in accountMonths {
+                _ = try dryRunUseCases.queryHomeSummary(accountMonth: month)
+                _ = try dryRunUseCases.queryBalanceSummary(accountMonth: month)
+                _ = try dryRunUseCases.queryStatisticsSummary(accountMonth: month)
+                _ = try dryRunUseCases.queryInvestmentMonthlySummary(accountMonth: month, fundName: nil)
+            }
+        } catch {
+            errors.append("备份 dry-run 校验失败：\(error.localizedDescription)")
+        }
+    }
+
+    let preview = errors.isEmpty
+        ? BackupRestorePreview(
+            recordCounts: package.manifest.recordCounts,
+            exportedAt: package.manifest.exportedAt,
+            accountMonths: accountMonths
+        )
+        : nil
+
+    return (
+        errors.isEmpty ? package : nil,
+        BackupValidationResult(
+            isValid: errors.isEmpty,
+            manifest: package.manifest,
+            preview: preview,
+            errors: errors
+        )
+    )
+}
+
+private func validateBackupPayload(_ payload: BackupPayload, manifest: BackupManifest) -> [String] {
+    var errors: [String] = []
+    if payload.recordCounts != manifest.recordCounts {
+        errors.append("备份记录数量与 manifest 不一致")
+    }
+
+    let paymentMethodIds = validateUniqueUUIDs(payload.paymentMethods.map(\.id), label: "payment_methods", errors: &errors)
+    let paymentTypeIds = validateUniqueUUIDs(payload.paymentTypes.map(\.id), label: "payment_types", errors: &errors)
+    let paymentDetailIds = validateUniqueUUIDs(payload.paymentDetails.map(\.id), label: "payment_details", errors: &errors)
+    let importBatchIds = validateUniqueUUIDs(payload.importBatches.map(\.id), label: "import_batches", errors: &errors)
+    let investmentIds = validateUniqueUUIDs(payload.investmentTransactions.map(\.id), label: "investment_transactions", errors: &errors)
+    let journalIds = validateUniqueUUIDs(payload.journalRecords.map(\.id), label: "journal_records", errors: &errors)
+    let importCandidateIds = validateUniqueUUIDs(payload.importCandidates.map(\.id), label: "import_candidates", errors: &errors)
+
+    for row in payload.paymentMethods {
+        validateDate(row.createdAt, field: "payment_methods.created_at", errors: &errors)
+        validateDate(row.updatedAt, field: "payment_methods.updated_at", errors: &errors)
+        validateStringListJSON(row.semanticTags, field: "payment_methods.semantic_tags", errors: &errors)
+        if PaymentMethodType(rawValue: row.methodType) == nil {
+            errors.append("payment_methods.method_type 无效：\(row.methodType)")
+        }
+    }
+
+    for row in payload.paymentTypes {
+        validateDate(row.createdAt, field: "payment_types.created_at", errors: &errors)
+        validateDate(row.updatedAt, field: "payment_types.updated_at", errors: &errors)
+        validateStringListJSON(row.semanticTags, field: "payment_types.semantic_tags", errors: &errors)
+        if AccountingElement(rawValue: row.element) == nil {
+            errors.append("payment_types.element 无效：\(row.element)")
+        }
+    }
+
+    for row in payload.paymentDetails {
+        validateDate(row.createdAt, field: "payment_details.created_at", errors: &errors)
+        validateDate(row.updatedAt, field: "payment_details.updated_at", errors: &errors)
+        validateStringListJSON(row.semanticTags, field: "payment_details.semantic_tags", errors: &errors)
+        requireReference(row.paymentTypeId, in: paymentTypeIds, field: "payment_details.payment_type_id", errors: &errors)
+    }
+
+    for row in payload.importBatches {
+        validateDate(row.importedAt, field: "import_batches.imported_at", errors: &errors)
+        if ImportSource(rawValue: row.source) == nil {
+            errors.append("import_batches.source 无效：\(row.source)")
+        }
+        if ImportBatchStatus(rawValue: row.status) == nil {
+            errors.append("import_batches.status 无效：\(row.status)")
+        }
+    }
+
+    for row in payload.investmentTransactions {
+        validateDate(row.occurredAt, field: "investment_transactions.occurred_at", errors: &errors)
+        validateDate(row.createdAt, field: "investment_transactions.created_at", errors: &errors)
+        validateDate(row.updatedAt, field: "investment_transactions.updated_at", errors: &errors)
+        validateOptionalDecimal(row.tradeAmount, field: "investment_transactions.trade_amount", errors: &errors)
+        validateOptionalDecimal(row.tradeShare, field: "investment_transactions.trade_share", errors: &errors)
+        validateOptionalDecimal(row.nav, field: "investment_transactions.nav", errors: &errors)
+        validateOptionalDecimal(row.bookAmount, field: "investment_transactions.book_amount", errors: &errors)
+        validateDecimal(row.realizedGain, field: "investment_transactions.realized_gain", errors: &errors)
+        validateDecimal(row.realizedLoss, field: "investment_transactions.realized_loss", errors: &errors)
+        validateDecimal(row.holdingShare, field: "investment_transactions.holding_share", errors: &errors)
+        validateOptionalDecimal(row.averageCost, field: "investment_transactions.average_cost", errors: &errors)
+        validateDecimal(row.bookValue, field: "investment_transactions.book_value", errors: &errors)
+        validateOptionalDecimal(row.presentValue, field: "investment_transactions.present_value", errors: &errors)
+        if InvestmentTransactionType(rawValue: row.transactionType) == nil {
+            errors.append("investment_transactions.transaction_type 无效：\(row.transactionType)")
+        }
+    }
+
+    let engineKeys = payload.journalRecords.compactMap(\.engineKey).filter { !$0.isEmpty }
+    let duplicateEngineKeys = duplicateValues(engineKeys)
+    if !duplicateEngineKeys.isEmpty {
+        errors.append("journal_records.engine_key 重复：\(duplicateEngineKeys.sorted().joined(separator: ","))")
+    }
+
+    for row in payload.journalRecords {
+        validateDate(row.occurredAt, field: "journal_records.occurred_at", errors: &errors)
+        validateDate(row.createdAt, field: "journal_records.created_at", errors: &errors)
+        validateDate(row.updatedAt, field: "journal_records.updated_at", errors: &errors)
+        validateDecimal(row.amount, field: "journal_records.amount", errors: &errors)
+        requireReference(row.paymentMethodId, in: paymentMethodIds, field: "journal_records.payment_method_id", errors: &errors)
+        requireReference(row.paymentTypeId, in: paymentTypeIds, field: "journal_records.payment_type_id", errors: &errors)
+        requireReference(row.paymentDetailId, in: paymentDetailIds, field: "journal_records.payment_detail_id", errors: &errors)
+        if RecordSource(rawValue: row.recordSource) == nil {
+            errors.append("journal_records.record_source 无效：\(row.recordSource)")
+        }
+        if RecordKind(rawValue: row.recordKind) == nil {
+            errors.append("journal_records.record_kind 无效：\(row.recordKind)")
+        }
+        if CarryForwardRole(rawValue: row.carryForwardRole) == nil {
+            errors.append("journal_records.carry_forward_role 无效：\(row.carryForwardRole)")
+        }
+        if let engineFamily = row.engineFamily, EngineFamily(rawValue: engineFamily) == nil {
+            errors.append("journal_records.engine_family 无效：\(engineFamily)")
+        }
+        validateUUIDList(row.sourceRecordIds, field: "journal_records.source_record_ids", requiredSet: journalIds, errors: &errors)
+        validateUUIDList(row.sourceInvestmentTransactionIds, field: "journal_records.source_investment_transaction_ids", requiredSet: investmentIds, errors: &errors)
+        if let batchId = row.sourceImportBatchId {
+            requireReference(batchId, in: importBatchIds, field: "journal_records.source_import_batch_id", errors: &errors)
+        }
+        if let candidateId = row.sourceImportCandidateId {
+            requireReference(candidateId, in: importCandidateIds, field: "journal_records.source_import_candidate_id", errors: &errors)
+        }
+    }
+
+    for row in payload.importCandidates {
+        validateDate(row.occurredAt, field: "import_candidates.occurred_at", errors: &errors)
+        validateDate(row.createdAt, field: "import_candidates.created_at", errors: &errors)
+        validateDate(row.updatedAt, field: "import_candidates.updated_at", errors: &errors)
+        validateDecimal(row.amount, field: "import_candidates.amount", errors: &errors)
+        requireReference(row.batchId, in: importBatchIds, field: "import_candidates.batch_id", errors: &errors)
+        if let methodId = row.paymentMethodId {
+            requireReference(methodId, in: paymentMethodIds, field: "import_candidates.payment_method_id", errors: &errors)
+        }
+        if let typeId = row.paymentTypeId {
+            requireReference(typeId, in: paymentTypeIds, field: "import_candidates.payment_type_id", errors: &errors)
+        }
+        if let detailId = row.paymentDetailId {
+            requireReference(detailId, in: paymentDetailIds, field: "import_candidates.payment_detail_id", errors: &errors)
+        }
+        if let recordId = row.createdJournalRecordId {
+            requireReference(recordId, in: journalIds, field: "import_candidates.created_journal_record_id", errors: &errors)
+        }
+        if ImportCandidateStatus(rawValue: row.status) == nil {
+            errors.append("import_candidates.status 无效：\(row.status)")
+        }
+    }
+
+    return errors
+}
+
+private func validateUniqueUUIDs(_ ids: [String], label: String, errors: inout [String]) -> Set<String> {
+    var seen: Set<String> = []
+    for id in ids {
+        guard UUID(uuidString: id) != nil else {
+            errors.append("\(label) 包含无效 UUID：\(id)")
+            continue
+        }
+        guard !seen.contains(id) else {
+            errors.append("\(label) 包含重复 UUID：\(id)")
+            continue
+        }
+        seen.insert(id)
+    }
+    return seen
+}
+
+private func duplicateValues(_ values: [String]) -> Set<String> {
+    var seen: Set<String> = []
+    var duplicates: Set<String> = []
+    for value in values {
+        if seen.contains(value) {
+            duplicates.insert(value)
+        } else {
+            seen.insert(value)
+        }
+    }
+    return duplicates
+}
+
+private func requireReference(_ value: String, in ids: Set<String>, field: String, errors: inout [String]) {
+    guard UUID(uuidString: value) != nil else {
+        errors.append("\(field) 包含无效 UUID：\(value)")
+        return
+    }
+    guard ids.contains(value) else {
+        errors.append("\(field) 引用了不存在的记录：\(value)")
+        return
+    }
+}
+
+private func validateUUIDList(_ value: String, field: String, requiredSet: Set<String>, errors: inout [String]) {
+    for raw in value.split(separator: ",").map(String.init) {
+        requireReference(raw, in: requiredSet, field: field, errors: &errors)
+    }
+}
+
+private func validateDate(_ value: String, field: String, errors: inout [String]) {
+    if makeISO8601Formatter().date(from: value) == nil {
+        errors.append("\(field) 日期格式无效：\(value)")
+    }
+}
+
+private func validateDecimal(_ value: String, field: String, errors: inout [String]) {
+    if Decimal(string: value, locale: Locale(identifier: "en_US_POSIX")) == nil {
+        errors.append("\(field) 数字格式无效：\(value)")
+    }
+}
+
+private func validateOptionalDecimal(_ value: String?, field: String, errors: inout [String]) {
+    guard let value, !value.isEmpty else { return }
+    validateDecimal(value, field: field, errors: &errors)
+}
+
+private func validateStringListJSON(_ value: String, field: String, errors: inout [String]) {
+    guard let data = value.data(using: .utf8),
+          (try? JSONDecoder().decode([String].self, from: data)) != nil else {
+        errors.append("\(field) 不是有效字符串数组 JSON")
+        return
+    }
+}
+
+private func csvEscape(_ value: String) -> String {
+    guard value.contains(",") || value.contains("\"") || value.contains("\n") else {
+        return value
+    }
+    return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
+}
+
+private func fileTimestamp(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.dateFormat = "yyyyMMdd-HHmmss"
+    return formatter.string(from: date)
+}
+
+private func dateRoundedToWholeSeconds(_ date: Date) -> Date {
+    Date(timeIntervalSince1970: floor(date.timeIntervalSince1970))
 }
 
 private func parseImportRows(source: ImportSource, contents: String) throws -> ImportParseResult {
