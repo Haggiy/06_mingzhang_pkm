@@ -132,7 +132,15 @@ final class P0LedgerFlowTests: XCTestCase {
         XCTAssertEqual(home.balance, Decimal(-100))
         XCTAssertEqual(balance.cashBalance, Decimal(0))
         XCTAssertEqual(balance.liabilityItems, [
-            BalanceItem(name: "广发卡", amount: Decimal(100), sourceRecordIds: [record.id])
+            LiabilityBalanceItem(
+                name: "广发卡",
+                objectKey: "liability:广发卡",
+                amount: Decimal(100),
+                formedAmount: Decimal(100),
+                repaidAmount: Decimal(0),
+                costAmount: Decimal(0),
+                sourceRecordIds: [record.id]
+            )
         ])
         XCTAssertEqual(statistics.expenseByType, [
             ExpenseTypeSummary(typeName: "生活必要开支", amount: Decimal(100), sourceRecordIds: [record.id])
@@ -161,7 +169,15 @@ final class P0LedgerFlowTests: XCTestCase {
 
         XCTAssertEqual(home.expenseTotal, Decimal(120))
         XCTAssertEqual(balance.liabilityItems, [
-            BalanceItem(name: "广发卡", amount: Decimal(120), sourceRecordIds: [record.id])
+            LiabilityBalanceItem(
+                name: "广发卡",
+                objectKey: "liability:广发卡",
+                amount: Decimal(120),
+                formedAmount: Decimal(120),
+                repaidAmount: Decimal(0),
+                costAmount: Decimal(0),
+                sourceRecordIds: [record.id]
+            )
         ])
         XCTAssertEqual(statistics.expenseByType, [
             ExpenseTypeSummary(typeName: "生活必要开支", amount: Decimal(120), sourceRecordIds: [record.id])

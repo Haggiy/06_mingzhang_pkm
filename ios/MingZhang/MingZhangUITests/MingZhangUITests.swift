@@ -619,6 +619,21 @@ final class InvestmentLedgerUITests: XCTestCase {
         button.tap()
     }
 
+    func alipayCSV(counterparty: String, product: String, amount: String = "100.00", orderId: String = "T-001") -> String {
+        """
+        -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
+        交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+        2026-04-15 12:30:45,餐饮美食,\(counterparty),/,\(product),支出,\(amount),广发卡,交易成功,\(orderId)\t,\t,,
+        """
+    }
+
+    func addSetupStep(index: Int, csv: String, type: String, detail: String) {
+        app.launchEnvironment["MZ_SETUP_\(index)_CSV"] = csv
+        app.launchEnvironment["MZ_SETUP_\(index)_SOURCE"] = "alipay"
+        app.launchEnvironment["MZ_SETUP_\(index)_TYPE"] = type
+        app.launchEnvironment["MZ_SETUP_\(index)_DETAIL"] = detail
+    }
+
     func testInvestmentLedgerShowsInvestmentAssetEntryAndFundRow() {
         app.launch()
 
@@ -655,5 +670,44 @@ final class InvestmentLedgerUITests: XCTestCase {
             XCTAssertTrue(app.staticTexts["记录详情"].waitForExistence(timeout: 5))
             captureV51Screenshot("21-只读记录详情")
         }
+    }
+
+    func testLiabilityDetailCreatesRepaymentAndRefreshesSourceRecords() {
+        continueAfterFailure = false
+        addSetupStep(
+            index: 0,
+            csv: alipayCSV(counterparty: "信用卡商户", product: "月度账单", amount: "100.00", orderId: "P1-LIABILITY-001"),
+            type: "生活必要开支",
+            detail: "伙食费"
+        )
+        app.launch()
+
+        app.waitForMingZhangTab("资产负债").tap()
+        let liabilityRow = app.buttons["liability_row_广发卡"]
+        XCTAssertTrue(liabilityRow.waitForExistence(timeout: 10))
+        liabilityRow.tap()
+
+        XCTAssertTrue(app.staticTexts["剩余负债"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["形成负债"].exists)
+        XCTAssertTrue(app.staticTexts["100.00"].exists)
+
+        tapVisibleButton(identifier: "liability_repayment_button")
+        XCTAssertTrue(app.staticTexts["记还款"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["电子钱包余额"].exists)
+        XCTAssertTrue(app.staticTexts["负债类减记"].exists)
+        XCTAssertTrue(app.staticTexts["账单还款"].exists)
+        XCTAssertTrue(app.staticTexts["广发卡"].exists)
+        tapVisibleButton(identifier: "btn_save")
+
+        XCTAssertTrue(app.staticTexts["剩余负债"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["已还款"].exists)
+        XCTAssertTrue(app.staticTexts["2 条"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["0.00"].exists)
+
+        tapVisibleButton(identifier: "liability_source_records_button")
+        XCTAssertTrue(app.textFields["source_records_search_field"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["当前筛选"].exists)
+        let repaymentRecord = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "广发卡还款")).firstMatch
+        XCTAssertTrue(repaymentRecord.waitForExistence(timeout: 5))
     }
 }

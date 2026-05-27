@@ -72,6 +72,7 @@ public struct ImportCandidateRecord: Equatable, Identifiable, Sendable {
     public var paymentTypeName: String?
     public var paymentDetailId: UUID?
     public var paymentDetailName: String?
+    public var objectKey: String?
     public var note: String?
     public var rawLineNumber: Int
     public var rawPayload: String
@@ -92,6 +93,7 @@ public struct ImportCandidateRecord: Equatable, Identifiable, Sendable {
         paymentTypeName: String?,
         paymentDetailId: UUID?,
         paymentDetailName: String?,
+        objectKey: String? = nil,
         note: String?,
         rawLineNumber: Int,
         rawPayload: String,
@@ -111,6 +113,7 @@ public struct ImportCandidateRecord: Equatable, Identifiable, Sendable {
         self.paymentTypeName = paymentTypeName
         self.paymentDetailId = paymentDetailId
         self.paymentDetailName = paymentDetailName
+        self.objectKey = objectKey
         self.note = note
         self.rawLineNumber = rawLineNumber
         self.rawPayload = rawPayload
@@ -126,6 +129,7 @@ public struct ImportCandidateChanges: Equatable, Sendable {
     public var paymentMethodName: String?
     public var paymentTypeName: String?
     public var paymentDetailName: String?
+    public var objectKey: String?
     public var note: String?
 
     public init(
@@ -134,6 +138,7 @@ public struct ImportCandidateChanges: Equatable, Sendable {
         paymentMethodName: String? = nil,
         paymentTypeName: String? = nil,
         paymentDetailName: String? = nil,
+        objectKey: String? = nil,
         note: String? = nil
     ) {
         self.accountMonth = accountMonth
@@ -141,6 +146,7 @@ public struct ImportCandidateChanges: Equatable, Sendable {
         self.paymentMethodName = paymentMethodName
         self.paymentTypeName = paymentTypeName
         self.paymentDetailName = paymentDetailName
+        self.objectKey = objectKey
         self.note = note
     }
 }

@@ -250,6 +250,7 @@ public struct CreateManualRecordInput: Equatable, Sendable {
     public var amount: Decimal
     public var paymentTypeName: String
     public var paymentDetailName: String
+    public var objectKey: String?
     public var note: String?
 
     public init(
@@ -259,6 +260,7 @@ public struct CreateManualRecordInput: Equatable, Sendable {
         amount: Decimal,
         paymentTypeName: String,
         paymentDetailName: String,
+        objectKey: String? = nil,
         note: String? = nil
     ) {
         self.accountMonth = accountMonth
@@ -267,6 +269,7 @@ public struct CreateManualRecordInput: Equatable, Sendable {
         self.amount = amount
         self.paymentTypeName = paymentTypeName
         self.paymentDetailName = paymentDetailName
+        self.objectKey = objectKey
         self.note = note
     }
 }
@@ -278,6 +281,7 @@ public struct JournalRecordChanges: Equatable, Sendable {
     public var amount: Decimal?
     public var paymentTypeName: String?
     public var paymentDetailName: String?
+    public var objectKey: String?
     public var note: String?
 
     public init(
@@ -287,6 +291,7 @@ public struct JournalRecordChanges: Equatable, Sendable {
         amount: Decimal? = nil,
         paymentTypeName: String? = nil,
         paymentDetailName: String? = nil,
+        objectKey: String? = nil,
         note: String? = nil
     ) {
         self.accountMonth = accountMonth
@@ -295,6 +300,7 @@ public struct JournalRecordChanges: Equatable, Sendable {
         self.amount = amount
         self.paymentTypeName = paymentTypeName
         self.paymentDetailName = paymentDetailName
+        self.objectKey = objectKey
         self.note = note
     }
 }
@@ -349,15 +355,33 @@ public struct HomeSummary: Equatable, Sendable {
 
 public struct BalanceItem: Equatable, Sendable {
     public var name: String
+    public var objectKey: String?
     public var amount: Decimal
+    public var formedAmount: Decimal
+    public var repaidAmount: Decimal
+    public var costAmount: Decimal
     public var sourceRecordIds: [UUID]
 
-    public init(name: String, amount: Decimal, sourceRecordIds: [UUID]) {
+    public init(
+        name: String,
+        objectKey: String? = nil,
+        amount: Decimal,
+        formedAmount: Decimal = 0,
+        repaidAmount: Decimal = 0,
+        costAmount: Decimal = 0,
+        sourceRecordIds: [UUID]
+    ) {
         self.name = name
+        self.objectKey = objectKey
         self.amount = amount
+        self.formedAmount = formedAmount
+        self.repaidAmount = repaidAmount
+        self.costAmount = costAmount
         self.sourceRecordIds = sourceRecordIds
     }
 }
+
+public typealias LiabilityBalanceItem = BalanceItem
 
 public struct BalanceSummary: Equatable, Sendable {
     public var cashBalance: Decimal
@@ -375,6 +399,68 @@ public struct BalanceSummary: Equatable, Sendable {
         self.cashSourceRecordIds = cashSourceRecordIds
         self.liabilityItems = liabilityItems
         self.investmentItems = investmentItems
+    }
+}
+
+public struct CreateLiabilityRepaymentInput: Equatable, Sendable {
+    public var accountMonth: String
+    public var occurredAt: Date
+    public var liabilityObjectKey: String
+    public var amount: Decimal
+    public var paymentMethodName: String
+    public var note: String?
+
+    public init(
+        accountMonth: String,
+        occurredAt: Date,
+        liabilityObjectKey: String,
+        amount: Decimal,
+        paymentMethodName: String,
+        note: String? = nil
+    ) {
+        self.accountMonth = accountMonth
+        self.occurredAt = occurredAt
+        self.liabilityObjectKey = liabilityObjectKey
+        self.amount = amount
+        self.paymentMethodName = paymentMethodName
+        self.note = note
+    }
+}
+
+public struct LiabilityDetailSummary: Equatable, Sendable {
+    public var name: String
+    public var objectKey: String
+    public var formedAmount: Decimal
+    public var repaidAmount: Decimal
+    public var costAmount: Decimal
+    public var remainingAmount: Decimal
+    public var formationSourceRecordIds: [UUID]
+    public var repaymentSourceRecordIds: [UUID]
+    public var costSourceRecordIds: [UUID]
+    public var sourceRecordIds: [UUID]
+
+    public init(
+        name: String,
+        objectKey: String,
+        formedAmount: Decimal,
+        repaidAmount: Decimal,
+        costAmount: Decimal,
+        remainingAmount: Decimal,
+        formationSourceRecordIds: [UUID],
+        repaymentSourceRecordIds: [UUID],
+        costSourceRecordIds: [UUID],
+        sourceRecordIds: [UUID]
+    ) {
+        self.name = name
+        self.objectKey = objectKey
+        self.formedAmount = formedAmount
+        self.repaidAmount = repaidAmount
+        self.costAmount = costAmount
+        self.remainingAmount = remainingAmount
+        self.formationSourceRecordIds = formationSourceRecordIds
+        self.repaymentSourceRecordIds = repaymentSourceRecordIds
+        self.costSourceRecordIds = costSourceRecordIds
+        self.sourceRecordIds = sourceRecordIds
     }
 }
 
@@ -586,6 +672,11 @@ public final class LedgerDatabase: @unchecked Sendable {
             try db.create(index: "idx_payment_methods_seed_key", on: "payment_methods", columns: ["seed_key"], unique: true)
             try db.create(index: "idx_payment_types_seed_key", on: "payment_types", columns: ["seed_key"], unique: true)
             try db.create(index: "idx_payment_details_seed_key", on: "payment_details", columns: ["seed_key"], unique: true)
+        }
+        migrator.registerMigration("v5_p1_liability_repayment") { db in
+            try db.alter(table: "import_candidates") { table in
+                table.add(column: "object_key", .text)
+            }
         }
         return migrator
     }
@@ -1112,7 +1203,7 @@ public final class LedgerUseCases: @unchecked Sendable {
             try Row.fetchAll(db, sql: """
                 SELECT id, batch_id, status, account_month, occurred_at, payment_method_id,
                        payment_method_name, amount, payment_type_id, payment_type_name,
-                       payment_detail_id, payment_detail_name, note, raw_line_number,
+                       payment_detail_id, payment_detail_name, object_key, note, raw_line_number,
                        raw_payload, raw_transaction_id, raw_fingerprint, created_journal_record_id
                 FROM import_candidates
                 WHERE batch_id = ?
@@ -1286,10 +1377,13 @@ public final class LedgerUseCases: @unchecked Sendable {
                 try requireActive(detail)
                 let recordAmount = candidate.amount
                 try validateRecordFields(
+                    db,
                     accountMonth: candidate.accountMonth,
                     amount: recordAmount,
+                    paymentMethod: method,
                     paymentType: type,
-                    paymentDetail: detail
+                    paymentDetail: detail,
+                    objectKey: candidate.objectKey
                 )
 
                 let record = JournalRecord(
@@ -1309,7 +1403,7 @@ public final class LedgerUseCases: @unchecked Sendable {
                     carryForwardRole: .none,
                     engineFamily: nil,
                     engineKey: nil,
-                    objectKey: nil,
+                    objectKey: normalizedOptionalText(candidate.objectKey),
                     sourceRecordIds: [],
                     sourceInvestmentTransactionIds: [],
                     sourceImportBatchId: candidate.batchId,
@@ -1332,8 +1426,8 @@ public final class LedgerUseCases: @unchecked Sendable {
             return (records: records.sorted { ($0.occurredAt, $0.createdAt) < ($1.occurredAt, $1.createdAt) }, months: affectedMonths)
         }
 
-        for month in result.months.sorted() {
-            _ = try recalculateAccountMonth(month)
+        if let firstMonth = result.months.sorted().first {
+            _ = try recalculateAccountMonths(startingAt: firstMonth)
         }
         return result.records
     }
@@ -1378,10 +1472,13 @@ public final class LedgerUseCases: @unchecked Sendable {
             try requireActive(type)
             try requireActive(detail)
             try validateRecordFields(
+                db,
                 accountMonth: input.accountMonth,
                 amount: input.amount,
+                paymentMethod: method,
                 paymentType: type,
-                paymentDetail: detail
+                paymentDetail: detail,
+                objectKey: input.objectKey
             )
             let now = Date()
             let record = JournalRecord(
@@ -1398,10 +1495,10 @@ public final class LedgerUseCases: @unchecked Sendable {
                 note: input.note,
                 recordSource: .manual,
                 recordKind: .normal,
-                carryForwardRole: .none,
-                engineFamily: nil,
-                engineKey: nil,
-                objectKey: nil,
+                    carryForwardRole: .none,
+                    engineFamily: nil,
+                    engineKey: nil,
+                    objectKey: normalizedOptionalText(input.objectKey),
                 sourceRecordIds: [],
                 sourceInvestmentTransactionIds: [],
                 sourceImportBatchId: nil,
@@ -1413,8 +1510,22 @@ public final class LedgerUseCases: @unchecked Sendable {
             return record
         }
 
-        _ = try recalculateAccountMonth(record.accountMonth)
+        _ = try recalculateAccountMonths(startingAt: record.accountMonth)
         return record
+    }
+
+    @discardableResult
+    public func createLiabilityRepayment(input: CreateLiabilityRepaymentInput) throws -> JournalRecord {
+        try createManualRecord(input: CreateManualRecordInput(
+            accountMonth: input.accountMonth,
+            occurredAt: input.occurredAt,
+            paymentMethodName: input.paymentMethodName,
+            amount: input.amount,
+            paymentTypeName: "负债类减记",
+            paymentDetailName: "账单还款",
+            objectKey: input.liabilityObjectKey,
+            note: input.note
+        ))
     }
 
     @discardableResult
@@ -1463,26 +1574,31 @@ public final class LedgerUseCases: @unchecked Sendable {
                 record.paymentDetailId = detail.id
                 record.paymentDetailName = detail.name
             }
+            if let objectKey = changes.objectKey {
+                record.objectKey = normalizedOptionalText(objectKey)
+            }
             if let note = changes.note {
                 record.note = note
             }
+            let finalMethod = try requirePaymentMethod(db, id: record.paymentMethodId)
             let finalType = try requirePaymentType(db, id: record.paymentTypeId)
             let finalDetail = try requirePaymentDetail(db, id: record.paymentDetailId)
             try validateRecordFields(
+                db,
                 accountMonth: record.accountMonth,
                 amount: record.amount,
+                paymentMethod: finalMethod,
                 paymentType: finalType,
-                paymentDetail: finalDetail
+                paymentDetail: finalDetail,
+                objectKey: record.objectKey
             )
             record.updatedAt = Date()
             try persistJournalRecordUpdate(db, record: record)
             return (record: record, originalMonth: originalMonth)
         }
 
-        _ = try recalculateAccountMonth(updateContext.originalMonth)
-        if updateContext.record.accountMonth != updateContext.originalMonth {
-            _ = try recalculateAccountMonth(updateContext.record.accountMonth)
-        }
+        let startMonth = min(updateContext.originalMonth, updateContext.record.accountMonth)
+        _ = try recalculateAccountMonths(startingAt: startMonth)
         return updateContext.record
     }
 
@@ -1496,7 +1612,7 @@ public final class LedgerUseCases: @unchecked Sendable {
             return record.accountMonth
         }
 
-        _ = try recalculateAccountMonth(month)
+        _ = try recalculateAccountMonths(startingAt: month)
     }
 
     public func queryJournalRecords(filter: JournalRecordFilter) throws -> [JournalRecord] {
@@ -1598,46 +1714,58 @@ public final class LedgerUseCases: @unchecked Sendable {
     }
 
     public func queryBalanceSummary(accountMonth: String) throws -> BalanceSummary {
-        let engineRecords = try queryJournalRecords(
-            filter: JournalRecordFilter(accountMonths: [accountMonth], includeEngineRecords: true)
-        ).filter { $0.recordSource == .engine }
+        try database.writer.read { db in
+            let engineRecords = try fetchEngineRecords(db, accountMonth: accountMonth)
 
-        let cashBalance = engineRecords
-            .filter { $0.engineFamily == .cash }
-            .reduce(Decimal(0)) { $0 + $1.amount }
-        let cashSourceRecordIds = engineRecords
-            .filter { $0.engineFamily == .cash }
-            .flatMap(\.sourceRecordIds)
-            .sorted { $0.uuidString < $1.uuidString }
+            let cashBalance = engineRecords
+                .filter { $0.engineFamily == .cash }
+                .reduce(Decimal(0)) { $0 + $1.amount }
+            let cashSourceRecordIds = engineRecords
+                .filter { $0.engineFamily == .cash }
+                .flatMap(\.sourceRecordIds)
+                .sorted { $0.uuidString < $1.uuidString }
 
-        let liabilities = engineRecords
-            .filter { $0.engineFamily == .liability }
-            .map { record in
-                BalanceItem(
-                    name: record.objectKey?.replacingOccurrences(of: "liability:", with: "") ?? record.paymentMethodName,
-                    amount: record.amount,
-                    sourceRecordIds: record.sourceRecordIds
-                )
-            }
-            .sorted { $0.name < $1.name }
+            let liabilities = try engineRecords
+                .filter { $0.engineFamily == .liability }
+                .map { record -> BalanceItem in
+                    let objectKey = record.objectKey ?? liabilityObjectKey(for: record.paymentMethodName)
+                    let detail = try liabilityDetailSummary(db, objectKey: objectKey, accountMonth: accountMonth)
+                    return BalanceItem(
+                        name: detail.name,
+                        objectKey: detail.objectKey,
+                        amount: detail.remainingAmount,
+                        formedAmount: detail.formedAmount,
+                        repaidAmount: detail.repaidAmount,
+                        costAmount: detail.costAmount,
+                        sourceRecordIds: detail.sourceRecordIds
+                    )
+                }
+                .sorted { $0.name < $1.name }
 
-        let investments = engineRecords
-            .filter { $0.engineFamily == .investment }
-            .map { record in
-                BalanceItem(
-                    name: record.objectKey?.replacingOccurrences(of: "investment:", with: "") ?? "总投资资产",
-                    amount: record.amount,
-                    sourceRecordIds: record.sourceRecordIds
-                )
-            }
-            .sorted { $0.name < $1.name }
+            let investments = engineRecords
+                .filter { $0.engineFamily == .investment }
+                .map { record in
+                    BalanceItem(
+                        name: record.objectKey?.replacingOccurrences(of: "investment:", with: "") ?? "总投资资产",
+                        amount: record.amount,
+                        sourceRecordIds: record.sourceRecordIds
+                    )
+                }
+                .sorted { $0.name < $1.name }
 
-        return BalanceSummary(
-            cashBalance: cashBalance,
-            cashSourceRecordIds: cashSourceRecordIds,
-            liabilityItems: liabilities,
-            investmentItems: investments
-        )
+            return BalanceSummary(
+                cashBalance: cashBalance,
+                cashSourceRecordIds: cashSourceRecordIds,
+                liabilityItems: liabilities,
+                investmentItems: investments
+            )
+        }
+    }
+
+    public func queryLiabilityDetail(accountMonth: String, objectKey: String) throws -> LiabilityDetailSummary {
+        try database.writer.read { db in
+            try liabilityDetailSummary(db, objectKey: objectKey, accountMonth: accountMonth)
+        }
     }
 
     public func queryStatisticsSummary(accountMonth: String) throws -> StatisticsSummary {
@@ -1796,7 +1924,7 @@ public final class LedgerUseCases: @unchecked Sendable {
             return .empty
         }
 
-        return try recalculateAccountMonth(record.accountMonth)
+        return try recalculateAccountMonths(startingAt: record.accountMonth)
     }
 
     @discardableResult
@@ -1879,6 +2007,34 @@ public final class LedgerUseCases: @unchecked Sendable {
         }
     }
 
+    @discardableResult
+    private func recalculateAccountMonths(startingAt accountMonth: String) throws -> EngineRecalculationResult {
+        try validateAccountMonth(accountMonth)
+        let months = try database.writer.read { db in
+            var values = try String.fetchAll(db, sql: """
+                SELECT DISTINCT account_month
+                FROM journal_records
+                WHERE account_month >= ?
+                ORDER BY account_month ASC
+                """, arguments: [accountMonth])
+            if !values.contains(accountMonth) {
+                values.insert(accountMonth, at: 0)
+            }
+            return values
+        }
+
+        var result = EngineRecalculationResult.empty
+        for month in months {
+            let monthResult = try recalculateAccountMonth(month)
+            result.recalculatedMonths.append(contentsOf: monthResult.recalculatedMonths)
+            result.createdEngineRecordIds.append(contentsOf: monthResult.createdEngineRecordIds)
+            result.updatedEngineRecordIds.append(contentsOf: monthResult.updatedEngineRecordIds)
+            result.deletedEngineRecordIds.append(contentsOf: monthResult.deletedEngineRecordIds)
+            result.warnings.append(contentsOf: monthResult.warnings)
+        }
+        return result
+    }
+
     private func sourceRecordsWithSemantics(accountMonth: String) throws -> [SemanticRecordRow] {
         try database.writer.read { db in
             try fetchSourceRecordsWithSemantics(db, accountMonth: accountMonth)
@@ -1891,6 +2047,26 @@ private struct SemanticRecordRow {
     var paymentMethod: PaymentMethod
     var paymentType: PaymentType
     var paymentDetail: PaymentDetail
+}
+
+private struct LiabilityMovementAccumulator {
+    var name: String
+    var objectKey: String
+    var formedAmount: Decimal = 0
+    var repaidAmount: Decimal = 0
+    var costAmount: Decimal = 0
+    var formationSourceRecordIds: [UUID] = []
+    var repaymentSourceRecordIds: [UUID] = []
+    var costSourceRecordIds: [UUID] = []
+    var hasCurrentMonthMovement = false
+
+    var remainingAmount: Decimal {
+        formedAmount + costAmount - repaidAmount
+    }
+
+    var sourceRecordIds: [UUID] {
+        uniqueUUIDs(formationSourceRecordIds + repaymentSourceRecordIds + costSourceRecordIds)
+    }
 }
 
 private struct EngineRecordDraft {
@@ -2106,6 +2282,7 @@ private struct BackupImportCandidateRow: Codable, Equatable {
     var paymentTypeName: String?
     var paymentDetailId: String?
     var paymentDetailName: String?
+    var objectKey: String?
     var note: String?
     var rawLineNumber: Int
     var rawPayload: String
@@ -2270,7 +2447,7 @@ private func fetchBackupPayload(_ db: Database) throws -> BackupPayload {
         importCandidates: try Row.fetchAll(db, sql: """
             SELECT id, batch_id, status, account_month, occurred_at, payment_method_id,
                    payment_method_name, amount, payment_type_id, payment_type_name,
-                   payment_detail_id, payment_detail_name, note, raw_line_number,
+                   payment_detail_id, payment_detail_name, object_key, note, raw_line_number,
                    raw_payload, raw_transaction_id, raw_fingerprint, created_journal_record_id,
                    created_at, updated_at
             FROM import_candidates
@@ -2425,11 +2602,11 @@ private func replaceBackupPayload(_ payload: BackupPayload, in db: Database) thr
             INSERT INTO import_candidates (
                 id, batch_id, status, account_month, occurred_at, payment_method_id,
                 payment_method_name, amount, payment_type_id, payment_type_name,
-                payment_detail_id, payment_detail_name, note, raw_line_number,
+                payment_detail_id, payment_detail_name, object_key, note, raw_line_number,
                 raw_payload, raw_transaction_id, raw_fingerprint, created_journal_record_id,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [
                 row.id,
                 row.batchId,
@@ -2443,6 +2620,7 @@ private func replaceBackupPayload(_ payload: BackupPayload, in db: Database) thr
                 row.paymentTypeName,
                 row.paymentDetailId,
                 row.paymentDetailName,
+                row.objectKey,
                 row.note,
                 row.rawLineNumber,
                 row.rawPayload,
@@ -2631,11 +2809,11 @@ private func insertImportCandidate(_ db: Database, candidate: ImportCandidateRec
         INSERT INTO import_candidates (
             id, batch_id, status, account_month, occurred_at, payment_method_id,
             payment_method_name, amount, payment_type_id, payment_type_name,
-            payment_detail_id, payment_detail_name, note, raw_line_number,
+            payment_detail_id, payment_detail_name, object_key, note, raw_line_number,
             raw_payload, raw_transaction_id, raw_fingerprint, created_journal_record_id,
             created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, arguments: importCandidateArguments(candidate, createdAt: now, updatedAt: now))
 }
 
@@ -2691,9 +2869,9 @@ private func persistImportCandidateUpdate(_ db: Database, candidate: ImportCandi
         UPDATE import_candidates SET
             id = ?, batch_id = ?, status = ?, account_month = ?, occurred_at = ?,
             payment_method_id = ?, payment_method_name = ?, amount = ?, payment_type_id = ?,
-            payment_type_name = ?, payment_detail_id = ?, payment_detail_name = ?, note = ?,
-            raw_line_number = ?, raw_payload = ?, raw_transaction_id = ?, raw_fingerprint = ?,
-            created_journal_record_id = ?, created_at = ?, updated_at = ?
+            payment_type_name = ?, payment_detail_id = ?, payment_detail_name = ?, object_key = ?,
+            note = ?, raw_line_number = ?, raw_payload = ?, raw_transaction_id = ?,
+            raw_fingerprint = ?, created_journal_record_id = ?, created_at = ?, updated_at = ?
         WHERE id = ?
         """, arguments: arguments)
 }
@@ -2716,6 +2894,7 @@ private func importCandidateArguments(
         candidate.paymentTypeName,
         candidate.paymentDetailId?.uuidString,
         candidate.paymentDetailName,
+        candidate.objectKey,
         candidate.note,
         candidate.rawLineNumber,
         candidate.rawPayload,
@@ -2834,6 +3013,25 @@ private func fetchSourceRecordsWithSemantics(_ db: Database, accountMonth: Strin
         WHERE journal_records.account_month = ?
           AND journal_records.record_source != ?
         ORDER BY journal_records.occurred_at ASC, journal_records.created_at ASC
+        """, arguments: [accountMonth, RecordSource.engine.rawValue])
+
+    return try rows.map { row in
+        let record = try journalRecord(from: row)
+        return SemanticRecordRow(
+            record: record,
+            paymentMethod: try requirePaymentMethod(db, id: record.paymentMethodId),
+            paymentType: try requirePaymentType(db, id: record.paymentTypeId),
+            paymentDetail: try requirePaymentDetail(db, id: record.paymentDetailId)
+        )
+    }
+}
+
+private func fetchSourceRecordsWithSemanticsThrough(_ db: Database, accountMonth: String) throws -> [SemanticRecordRow] {
+    let rows = try Row.fetchAll(db, sql: """
+        \(selectJournalRecordSQL)
+        WHERE journal_records.account_month <= ?
+          AND journal_records.record_source != ?
+        ORDER BY journal_records.account_month ASC, journal_records.occurred_at ASC, journal_records.created_at ASC
         """, arguments: [accountMonth, RecordSource.engine.rawValue])
 
     return try rows.map { row in
@@ -3132,36 +3330,115 @@ private func fetchEngineRecords(_ db: Database, accountMonth: String) throws -> 
         .map(journalRecord(from:))
 }
 
+private func liabilityAccumulators(_ db: Database, through accountMonth: String) throws -> [String: LiabilityMovementAccumulator] {
+    let rows = try fetchSourceRecordsWithSemanticsThrough(db, accountMonth: accountMonth)
+    var accumulators: [String: LiabilityMovementAccumulator] = [:]
+
+    for row in rows {
+        let targetObjectKey: String?
+        if let objectKey = normalizedOptionalText(row.record.objectKey) {
+            targetObjectKey = objectKey
+        } else if row.paymentMethod.methodType == .liability {
+            targetObjectKey = liabilityObjectKey(for: row.paymentMethod.name)
+        } else {
+            targetObjectKey = nil
+        }
+
+        guard let objectKey = targetObjectKey, objectKey.hasPrefix("liability:") else {
+            continue
+        }
+
+        let name = try liabilityName(from: objectKey)
+        if accumulators[objectKey] == nil {
+            accumulators[objectKey] = LiabilityMovementAccumulator(name: name, objectKey: objectKey)
+        }
+
+        let amount = absoluteDecimal(row.record.amount)
+        let isCurrentMonth = row.record.accountMonth == accountMonth
+
+        if row.paymentMethod.methodType == .liability && row.paymentType.element == .expense {
+            if isLiabilityCost(paymentDetail: row.paymentDetail) {
+                accumulators[objectKey]?.costAmount += amount
+                accumulators[objectKey]?.costSourceRecordIds.append(row.record.id)
+            } else {
+                accumulators[objectKey]?.formedAmount += amount
+                accumulators[objectKey]?.formationSourceRecordIds.append(row.record.id)
+            }
+            if isCurrentMonth {
+                accumulators[objectKey]?.hasCurrentMonthMovement = true
+            }
+        } else if isLiabilityIncrease(paymentType: row.paymentType) {
+            accumulators[objectKey]?.formedAmount += amount
+            accumulators[objectKey]?.formationSourceRecordIds.append(row.record.id)
+            if isCurrentMonth {
+                accumulators[objectKey]?.hasCurrentMonthMovement = true
+            }
+        } else if isLiabilityRepayment(paymentType: row.paymentType, paymentDetail: row.paymentDetail) {
+            accumulators[objectKey]?.repaidAmount += amount
+            accumulators[objectKey]?.repaymentSourceRecordIds.append(row.record.id)
+            if isCurrentMonth {
+                accumulators[objectKey]?.hasCurrentMonthMovement = true
+            }
+        }
+    }
+
+    return accumulators
+}
+
+private func liabilityDetailSummary(
+    _ db: Database,
+    objectKey: String,
+    accountMonth: String
+) throws -> LiabilityDetailSummary {
+    try validateAccountMonth(accountMonth)
+    _ = try liabilityPaymentMethod(db, objectKey: objectKey)
+    let accumulator = try liabilityAccumulators(db, through: accountMonth)[objectKey] ??
+        LiabilityMovementAccumulator(name: try liabilityName(from: objectKey), objectKey: objectKey)
+
+    return LiabilityDetailSummary(
+        name: accumulator.name,
+        objectKey: accumulator.objectKey,
+        formedAmount: roundCurrency(accumulator.formedAmount),
+        repaidAmount: roundCurrency(accumulator.repaidAmount),
+        costAmount: roundCurrency(accumulator.costAmount),
+        remainingAmount: roundCurrency(accumulator.remainingAmount),
+        formationSourceRecordIds: accumulator.formationSourceRecordIds,
+        repaymentSourceRecordIds: accumulator.repaymentSourceRecordIds,
+        costSourceRecordIds: accumulator.costSourceRecordIds,
+        sourceRecordIds: accumulator.sourceRecordIds
+    )
+}
+
 private func makeEngineDrafts(_ db: Database, accountMonth: String, rows: [SemanticRecordRow]) throws -> [EngineRecordDraft] {
     var drafts: [EngineRecordDraft] = []
     let occurredAt = monthEndPlaceholder(accountMonth)
-    let liabilityRows = rows.filter {
-        $0.paymentMethod.methodType == .liability && $0.paymentType.element == .expense
-    }
-    let liabilityGroups = Dictionary(grouping: liabilityRows) { $0.paymentMethod.name }
 
-    for methodName in liabilityGroups.keys.sorted() {
-        let groupedRows = liabilityGroups[methodName] ?? []
-        let amount = groupedRows.reduce(Decimal(0)) { $0 + $1.record.amount }
-        guard amount != Decimal(0) else { continue }
+    let liabilities = try liabilityAccumulators(db, through: accountMonth)
+        .values
+        .filter { $0.remainingAmount != 0 || $0.hasCurrentMonthMovement }
+        .sorted { $0.name < $1.name }
 
-        let objectKey = "liability:\(methodName)"
+    for liability in liabilities {
         drafts.append(EngineRecordDraft(
             accountMonth: accountMonth,
             occurredAt: occurredAt,
-            amount: amount,
-            note: "\(methodName) 负债期末余额",
+            amount: roundCurrency(liability.remainingAmount),
+            note: "\(liability.name) 负债期末余额",
             engineFamily: .liability,
-            engineKey: "\(accountMonth):liability:ending_balance:\(objectKey)",
-            objectKey: objectKey,
-            sourceRecordIds: groupedRows.map(\.record.id).sorted { $0.uuidString < $1.uuidString },
+            engineKey: "\(accountMonth):liability:ending_balance:\(liability.objectKey)",
+            objectKey: liability.objectKey,
+            sourceRecordIds: liability.sourceRecordIds,
             sourceInvestmentTransactionIds: []
         ))
     }
 
     let cashRows = rows.filter {
         $0.paymentMethod.methodType == .asset &&
-            ($0.paymentType.element == .expense || $0.paymentType.element == .asset)
+            (
+                $0.paymentType.element == .expense ||
+                    $0.paymentType.element == .asset ||
+                    isLiabilityRepayment(paymentType: $0.paymentType, paymentDetail: $0.paymentDetail)
+            )
     }
     let cashAmount = cashRows.reduce(Decimal(0)) { $0 - $1.record.amount }
     if cashAmount != Decimal(0) {
@@ -3278,6 +3555,48 @@ private func normalizedOptionalText(_ value: String?) -> String? {
     guard let value else { return nil }
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? nil : trimmed
+}
+
+private func uniqueUUIDs(_ values: [UUID]) -> [UUID] {
+    var seen: Set<UUID> = []
+    var result: [UUID] = []
+    for value in values where !seen.contains(value) {
+        seen.insert(value)
+        result.append(value)
+    }
+    return result
+}
+
+private func liabilityObjectKey(for methodName: String) -> String {
+    "liability:\(methodName)"
+}
+
+private func liabilityName(from objectKey: String) throws -> String {
+    let prefix = "liability:"
+    guard objectKey.hasPrefix(prefix), objectKey.count > prefix.count else {
+        throw MingZhangError.validation("负债对象必须使用 liability:<名称> 格式")
+    }
+    return String(objectKey.dropFirst(prefix.count))
+}
+
+private func liabilityPaymentMethod(_ db: Database, objectKey: String) throws -> PaymentMethod {
+    let method = try requirePaymentMethod(db, name: try liabilityName(from: objectKey))
+    guard method.methodType == .liability else {
+        throw MingZhangError.validation("负债对象必须指向负债类收付手段")
+    }
+    return method
+}
+
+private func isLiabilityRepayment(paymentType: PaymentType, paymentDetail: PaymentDetail) -> Bool {
+    paymentType.name == "负债类减记" || paymentDetail.semanticTags.contains("账单还款")
+}
+
+private func isLiabilityIncrease(paymentType: PaymentType) -> Bool {
+    paymentType.name == "负债类增记"
+}
+
+private func isLiabilityCost(paymentDetail: PaymentDetail) -> Bool {
+    paymentDetail.semanticTags.contains("金融费用")
 }
 
 private func normalizedTags(_ values: [String]) -> [String] {
@@ -3592,7 +3911,7 @@ private func requireImportCandidate(_ db: Database, id: UUID) throws -> ImportCa
         sql: """
             SELECT id, batch_id, status, account_month, occurred_at, payment_method_id,
                    payment_method_name, amount, payment_type_id, payment_type_name,
-                   payment_detail_id, payment_detail_name, note, raw_line_number,
+                   payment_detail_id, payment_detail_name, object_key, note, raw_line_number,
                    raw_payload, raw_transaction_id, raw_fingerprint, created_journal_record_id
             FROM import_candidates
             WHERE id = ?
@@ -3648,6 +3967,9 @@ private func applyImportCandidateChanges(
         try requireActive(detail)
         candidate.paymentDetailId = detail.id
         candidate.paymentDetailName = detail.name
+    }
+    if let objectKey = changes.objectKey {
+        candidate.objectKey = normalizedOptionalText(objectKey)
     }
     if let note = changes.note {
         candidate.note = note
@@ -3756,15 +4078,37 @@ private func markBatchConfirmedIfComplete(_ db: Database, batchId: UUID) throws 
 }
 
 private func validateRecordFields(
+    _ db: Database,
     accountMonth: String,
     amount: Decimal,
+    paymentMethod: PaymentMethod,
     paymentType: PaymentType,
-    paymentDetail: PaymentDetail
+    paymentDetail: PaymentDetail,
+    objectKey: String?
 ) throws {
     try validateAccountMonth(accountMonth)
     guard paymentDetail.paymentTypeId == paymentType.id else {
         throw MingZhangError.validation("类型明细必须归属于当前收付类型")
     }
+
+    if let objectKey = normalizedOptionalText(objectKey) {
+        _ = try liabilityPaymentMethod(db, objectKey: objectKey)
+    }
+
+    guard isLiabilityRepayment(paymentType: paymentType, paymentDetail: paymentDetail) else {
+        return
+    }
+
+    guard amount > 0 else {
+        throw MingZhangError.validation("还款金额必须大于 0")
+    }
+    guard paymentMethod.methodType == .asset else {
+        throw MingZhangError.validation("还款记录必须使用现金类资产作为收付手段")
+    }
+    guard let objectKey = normalizedOptionalText(objectKey) else {
+        throw MingZhangError.validation("还款记录必须选择负债对象")
+    }
+    _ = try liabilityPaymentMethod(db, objectKey: objectKey)
 }
 
 private func validateInvestmentInput(_ db: Database, input: CreateInvestmentTransactionInput) throws {
@@ -3934,6 +4278,7 @@ private func importCandidate(from row: Row) throws -> ImportCandidateRecord {
         paymentTypeName: row["payment_type_name"],
         paymentDetailId: optionalUUID(row["payment_detail_id"]),
         paymentDetailName: row["payment_detail_name"],
+        objectKey: row["object_key"],
         note: row["note"],
         rawLineNumber: row["raw_line_number"],
         rawPayload: row["raw_payload"],
@@ -3957,6 +4302,7 @@ private func backupImportCandidate(from row: Row) throws -> BackupImportCandidat
         paymentTypeName: row["payment_type_name"],
         paymentDetailId: row["payment_detail_id"],
         paymentDetailName: row["payment_detail_name"],
+        objectKey: row["object_key"],
         note: row["note"],
         rawLineNumber: row["raw_line_number"],
         rawPayload: row["raw_payload"],
