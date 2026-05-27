@@ -107,10 +107,12 @@ final class LedgerStore: ObservableObject {
 
             let batch = try useCases.createImportBatch(source: source, fileName: "setup-\(stepIndex).csv", contents: csv)
             if let candidate = batch.candidates.first, let typeName, let detailName {
+                let objectKey = env["MZ_SETUP_\(stepIndex)_OBJECT_KEY"]
                 _ = try useCases.updateImportCandidate(id: candidate.id, changes: ImportCandidateChanges(
                     paymentMethodName: candidate.paymentMethodName,
                     paymentTypeName: typeName,
-                    paymentDetailName: detailName
+                    paymentDetailName: detailName,
+                    objectKey: objectKey
                 ))
                 _ = try useCases.confirmImportCandidates(ids: [candidate.id])
             }
@@ -740,6 +742,7 @@ struct JournalFormInput: Equatable {
     var amountText: String
     var paymentTypeName: String
     var paymentDetailName: String
+    var liabilityObjectKey: String
     var note: String
 
     func parsedAmount() throws -> Decimal {
@@ -762,6 +765,7 @@ struct JournalFormInput: Equatable {
             amount: try parsedAmount(),
             paymentTypeName: paymentTypeName,
             paymentDetailName: paymentDetailName,
+            objectKey: liabilityObjectKey.isEmpty ? nil : liabilityObjectKey,
             note: note.isEmpty ? nil : note
         )
     }
@@ -775,6 +779,7 @@ struct JournalFormInput: Equatable {
             amount: try parsedAmount(),
             paymentTypeName: paymentTypeName,
             paymentDetailName: paymentDetailName,
+            objectKey: liabilityObjectKey.isEmpty ? nil : liabilityObjectKey,
             note: note
         )
     }
@@ -802,7 +807,23 @@ struct JournalFormInput: Equatable {
             amountText: "100",
             paymentTypeName: "生活必要开支",
             paymentDetailName: "伙食费",
+            liabilityObjectKey: "",
             note: "午餐"
+        )
+    }
+
+    static func liabilityRepayment(item: BalanceItem, accountMonth: String, now: Date = Date()) -> JournalFormInput {
+        let objectKey = item.objectKey ?? "liability:\(item.name)"
+        let amount = item.amount > 0 ? item.amount : Decimal(0)
+        return JournalFormInput(
+            accountMonth: accountMonth,
+            occurredAt: now,
+            paymentMethodName: "电子钱包余额",
+            amountText: NSDecimalNumber(decimal: amount).stringValue,
+            paymentTypeName: "负债类减记",
+            paymentDetailName: "账单还款",
+            liabilityObjectKey: objectKey,
+            note: "\(item.name)还款"
         )
     }
 
@@ -814,6 +835,7 @@ struct JournalFormInput: Equatable {
             amountText: NSDecimalNumber(decimal: record.amount).stringValue,
             paymentTypeName: record.paymentTypeName,
             paymentDetailName: record.paymentDetailName,
+            liabilityObjectKey: record.objectKey ?? "",
             note: record.note ?? ""
         )
     }

@@ -2457,6 +2457,7 @@ struct ImportCandidateEditView: View {
     @State private var paymentMethodName: String
     @State private var paymentTypeName: String
     @State private var paymentDetailName: String
+    @State private var liabilityObjectKey: String
     @State private var note: String
 
     init(candidate: ImportCandidateRecord) {
@@ -2466,6 +2467,7 @@ struct ImportCandidateEditView: View {
         _paymentMethodName = State(initialValue: candidate.paymentMethodName ?? "待补真实账户")
         _paymentTypeName = State(initialValue: candidate.paymentTypeName ?? "")
         _paymentDetailName = State(initialValue: candidate.paymentDetailName ?? "")
+        _liabilityObjectKey = State(initialValue: candidate.objectKey ?? "")
         _note = State(initialValue: candidate.note ?? "")
     }
 
@@ -2491,6 +2493,11 @@ struct ImportCandidateEditView: View {
                     MZDivider()
                     MZMenuRow(title: "类型明细", required: true, selection: $paymentDetailName, options: [""] + availableDetails.map(\.name))
                         .accessibilityIdentifier("candidate-edit-detail-picker")
+                    if isLiabilityRepaymentCandidate {
+                        MZDivider()
+                        liabilityObjectMenuRow
+                            .accessibilityIdentifier("candidate-edit-liability-object-picker")
+                    }
                     MZDivider()
                     MZFieldRow(title: "备注") {
                         TextField("备注", text: $note, axis: .vertical)
@@ -2556,6 +2563,39 @@ struct ImportCandidateEditView: View {
         return names
     }
 
+    private var isLiabilityRepaymentCandidate: Bool {
+        paymentTypeName == "负债类减记" || paymentDetailName.contains("还款")
+    }
+
+    private var liabilityObjectOptions: [(key: String, name: String)] {
+        let options = store.userVisibleMethods
+            .filter { $0.methodType == .liability }
+            .map { (key: "liability:\($0.name)", name: $0.name) }
+        if !liabilityObjectKey.isEmpty, !options.contains(where: { $0.key == liabilityObjectKey }) {
+            return [(liabilityObjectKey, liabilityObjectKey.replacingOccurrences(of: "liability:", with: ""))] + options
+        }
+        return options
+    }
+
+    private var liabilityObjectMenuRow: some View {
+        MZFieldRow(title: "负债对象", required: true) {
+            Menu {
+                ForEach(liabilityObjectOptions, id: \.key) { option in
+                    Button(option.name) {
+                        liabilityObjectKey = option.key
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(liabilityObjectOptions.first(where: { $0.key == liabilityObjectKey })?.name ?? "未选择")
+                        .foregroundStyle(liabilityObjectKey.isEmpty ? MZTheme.tertiaryInk : MZTheme.ink)
+                    Image(systemName: "chevron.right")
+                        .foregroundStyle(MZTheme.accent)
+                }
+            }
+        }
+    }
+
     private func makeChanges() throws -> ImportCandidateChanges {
         let trimmedAmount = amountText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let amount = Decimal(string: trimmedAmount, locale: Locale(identifier: "en_US_POSIX")) else {
@@ -2567,6 +2607,7 @@ struct ImportCandidateEditView: View {
             paymentMethodName: paymentMethodName == (candidate.paymentMethodName ?? "待补真实账户") ? nil : paymentMethodName,
             paymentTypeName: paymentTypeName.isEmpty ? nil : paymentTypeName,
             paymentDetailName: paymentDetailName.isEmpty ? nil : paymentDetailName,
+            objectKey: liabilityObjectKey.isEmpty ? nil : liabilityObjectKey,
             note: note
         )
     }
@@ -2580,6 +2621,7 @@ struct ImportBatchEditView: View {
     @State private var paymentMethodName = ""
     @State private var paymentTypeName = ""
     @State private var paymentDetailName = ""
+    @State private var liabilityObjectKey = ""
 
     var body: some View {
         NavigationStack {
@@ -2597,6 +2639,10 @@ struct ImportBatchEditView: View {
                         MZMenuRow(title: "收付类型", selection: $paymentTypeName, options: [""] + store.activePaymentTypes.map(\.name))
                         MZDivider()
                         MZMenuRow(title: "类型明细", selection: $paymentDetailName, options: [""] + availableDetails.map(\.name))
+                        if isLiabilityRepaymentBatch {
+                            MZDivider()
+                            MZMenuRow(title: "负债对象", selection: $liabilityObjectKey, options: [""] + liabilityObjectOptions)
+                        }
                     }
 
                     MZPrimaryButton(title: "应用修改") {
@@ -2623,12 +2669,23 @@ struct ImportBatchEditView: View {
         return store.activePaymentDetails.filter { $0.paymentTypeId == typeId }
     }
 
+    private var isLiabilityRepaymentBatch: Bool {
+        paymentTypeName == "负债类减记" || paymentDetailName.contains("还款")
+    }
+
+    private var liabilityObjectOptions: [String] {
+        store.userVisibleMethods
+            .filter { $0.methodType == .liability }
+            .map { "liability:\($0.name)" }
+    }
+
     private var changes: ImportCandidateChanges {
         ImportCandidateChanges(
             accountMonth: accountMonth.isEmpty ? nil : accountMonth,
             paymentMethodName: paymentMethodName.isEmpty ? nil : paymentMethodName,
             paymentTypeName: paymentTypeName.isEmpty ? nil : paymentTypeName,
-            paymentDetailName: paymentDetailName.isEmpty ? nil : paymentDetailName
+            paymentDetailName: paymentDetailName.isEmpty ? nil : paymentDetailName,
+            objectKey: liabilityObjectKey.isEmpty ? nil : liabilityObjectKey
         )
     }
 }
@@ -2636,6 +2693,7 @@ struct ImportBatchEditView: View {
 struct JournalFormView: View {
     enum Mode: Equatable {
         case create
+        case liabilityRepayment(item: BalanceItem, accountMonth: String)
         case edit(JournalRecord)
     }
 
@@ -2650,6 +2708,8 @@ struct JournalFormView: View {
         switch mode {
         case .create:
             _input = State(initialValue: .p0Default())
+        case .liabilityRepayment(let item, let accountMonth):
+            _input = State(initialValue: .liabilityRepayment(item: item, accountMonth: accountMonth))
         case .edit(let record):
             _input = State(initialValue: .from(record: record))
         }
@@ -2687,6 +2747,11 @@ struct JournalFormView: View {
                     MZDivider()
                     MZMenuRow(title: "类型明细", required: true, selection: $input.paymentDetailName, options: availableDetails.map(\.name))
                         .accessibilityIdentifier("picker_payment_detail")
+                    if isLiabilityRepaymentForm {
+                        MZDivider()
+                        liabilityObjectMenuRow
+                            .accessibilityIdentifier("picker_liability_object")
+                    }
                 }
 
                 MZCard {
@@ -2758,6 +2823,8 @@ struct JournalFormView: View {
         switch mode {
         case .create:
             "记一笔"
+        case .liabilityRepayment:
+            "记还款"
         case .edit:
             "记录详情"
         }
@@ -2765,7 +2832,7 @@ struct JournalFormView: View {
 
     private var sourceText: String {
         switch mode {
-        case .create:
+        case .create, .liabilityRepayment:
             "手工记录"
         case .edit(let record):
             record.recordSource.longDisplayName
@@ -2774,7 +2841,7 @@ struct JournalFormView: View {
 
     private var kindText: String {
         switch mode {
-        case .create:
+        case .create, .liabilityRepayment:
             "普通记录"
         case .edit(let record):
             record.recordKind == .carryForward ? "固定 / 继承记录" : "普通记录"
@@ -2783,7 +2850,7 @@ struct JournalFormView: View {
 
     private var isEditableRecord: Bool {
         switch mode {
-        case .create:
+        case .create, .liabilityRepayment:
             true
         case .edit(let record):
             record.isDirectlyEditable
@@ -2792,7 +2859,7 @@ struct JournalFormView: View {
 
     private func save() -> Bool {
         switch mode {
-        case .create:
+        case .create, .liabilityRepayment:
             return store.createRecord(input: input)
         case .edit(let record):
             return store.updateRecord(id: record.id, input: input)
@@ -2800,7 +2867,10 @@ struct JournalFormView: View {
     }
 
     private var paymentMethodOptions: [String] {
-        var names = store.activePaymentMethods.map(\.name)
+        let methods = isLiabilityRepaymentForm
+            ? store.activePaymentMethods.filter { $0.methodType == .asset }
+            : store.activePaymentMethods
+        var names = methods.map(\.name)
         if !input.paymentMethodName.isEmpty, !names.contains(input.paymentMethodName) {
             names.append(input.paymentMethodName)
         }
@@ -2827,6 +2897,44 @@ struct JournalFormView: View {
         return active
     }
 
+    private var isLiabilityRepaymentForm: Bool {
+        input.paymentTypeName == "负债类减记" || input.paymentDetailName.contains("还款")
+    }
+
+    private var liabilityObjectOptions: [(key: String, name: String)] {
+        let methods = store.userVisibleMethods.filter { $0.methodType == .liability }
+        var options = methods.map { (key: "liability:\($0.name)", name: $0.name) }
+        if !input.liabilityObjectKey.isEmpty,
+           !options.contains(where: { $0.key == input.liabilityObjectKey }) {
+            let displayName = input.liabilityObjectKey.replacingOccurrences(of: "liability:", with: "")
+            options.insert((input.liabilityObjectKey, displayName), at: 0)
+        }
+        return options
+    }
+
+    private var liabilityObjectDisplayName: String {
+        liabilityObjectOptions.first(where: { $0.key == input.liabilityObjectKey })?.name ?? "未选择"
+    }
+
+    private var liabilityObjectMenuRow: some View {
+        MZFieldRow(title: "负债对象", required: true) {
+            Menu {
+                ForEach(liabilityObjectOptions, id: \.key) { option in
+                    Button(option.name) {
+                        input.liabilityObjectKey = option.key
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(liabilityObjectDisplayName)
+                        .foregroundStyle(input.liabilityObjectKey.isEmpty ? MZTheme.tertiaryInk : MZTheme.ink)
+                    Image(systemName: "chevron.right")
+                        .foregroundStyle(MZTheme.accent)
+                }
+            }
+        }
+    }
+
     private func normalizeConfigSelection() {
         if case .create = mode {
             if !store.activePaymentMethods.contains(where: { $0.name == input.paymentMethodName }) {
@@ -2834,6 +2942,11 @@ struct JournalFormView: View {
             }
             if !store.activePaymentTypes.contains(where: { $0.name == input.paymentTypeName }) {
                 input.paymentTypeName = store.activePaymentTypes.first?.name ?? input.paymentTypeName
+            }
+        }
+        if case .liabilityRepayment = mode {
+            if !store.activePaymentMethods.contains(where: { $0.name == input.paymentMethodName && $0.methodType == .asset }) {
+                input.paymentMethodName = store.activePaymentMethods.first(where: { $0.methodType == .asset })?.name ?? input.paymentMethodName
             }
         }
         normalizeDetailSelection()
@@ -3265,12 +3378,21 @@ struct LiabilityDetailView: View {
     @EnvironmentObject private var store: LedgerStore
     let item: BalanceItem
 
+    private var currentItem: BalanceItem {
+        store.balanceSummary.liabilityItems.first { candidate in
+            if let objectKey = item.objectKey {
+                return candidate.objectKey == objectKey
+            }
+            return candidate.name == item.name
+        } ?? item
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            MZBackHeader(title: item.name)
+            MZBackHeader(title: currentItem.name)
             MZPage {
                 MZCard {
-                    Text(item.amount.moneyText)
+                    Text(currentItem.amount.moneyText)
                         .font(.largeTitle.weight(.bold))
                         .monospacedDigit()
                         .foregroundStyle(MZTheme.ink)
@@ -3280,25 +3402,31 @@ struct LiabilityDetailView: View {
                 }
 
                 MZCard {
-                    SummaryLine(title: "本月新增", value: item.amount.moneyText)
+                    SummaryLine(title: "形成负债", value: currentItem.formedAmount.moneyText)
                     MZDivider()
-                    SummaryLine(title: "已还款", value: "0.00")
+                    SummaryLine(title: "已还款", value: currentItem.repaidAmount.moneyText)
                     MZDivider()
-                    SummaryLine(title: "利息成本", value: "0.00")
+                    SummaryLine(title: "利息/费用成本", value: currentItem.costAmount.moneyText)
                 }
 
                 MZCard {
                     NavigationLink {
                         SourceRecordsView(
-                            title: "\(item.name) 来源",
-                            filterDescription: "\(store.accountMonth.displayMonth) / \(item.name)",
-                            recordIds: item.sourceRecordIds
+                            title: "\(currentItem.name) 来源",
+                            filterDescription: "\(store.accountMonth.displayMonth) / \(currentItem.name)",
+                            recordIds: currentItem.sourceRecordIds
                         )
                     } label: {
-                        MZIconRow(title: "相关流水", subtitle: "查看负债形成与变化来源", systemImage: "list.bullet.rectangle", trailing: "\(item.sourceRecordIds.count) 条")
+                        MZIconRow(title: "相关流水", subtitle: "查看负债形成与变化来源", systemImage: "list.bullet.rectangle", trailing: "\(currentItem.sourceRecordIds.count) 条")
                     }
+                    .accessibilityIdentifier("liability_source_records_button")
                     MZDivider()
-                    MZIconRow(title: "记还款", subtitle: "生成负债类减记流水，后续接入", systemImage: "checkmark.circle", tint: MZTheme.tertiaryInk)
+                    NavigationLink {
+                        JournalFormView(mode: .liabilityRepayment(item: currentItem, accountMonth: store.accountMonth))
+                    } label: {
+                        MZIconRow(title: "记还款", subtitle: "生成负债类减记 / 账单还款流水", systemImage: "checkmark.circle")
+                    }
+                    .accessibilityIdentifier("liability_repayment_button")
                     MZDivider()
                     MZIconRow(title: "补利息", subtitle: "生成财务费用开支流水，后续接入", systemImage: "plus.circle", tint: MZTheme.tertiaryInk)
                 }

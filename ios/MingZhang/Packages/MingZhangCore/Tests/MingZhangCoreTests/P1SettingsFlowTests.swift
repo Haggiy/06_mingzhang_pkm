@@ -72,7 +72,17 @@ final class P1SettingsFlowTests: XCTestCase {
         XCTAssertEqual(updatedRecord.paymentDetailName, "餐食费")
         XCTAssertEqual(
             try useCases.queryBalanceSummary(accountMonth: "2026-04").liabilityItems,
-            [BalanceItem(name: "广发信用卡", amount: Decimal(100), sourceRecordIds: [record.id])]
+            [
+                LiabilityBalanceItem(
+                    name: "广发信用卡",
+                    objectKey: "liability:广发信用卡",
+                    amount: Decimal(100),
+                    formedAmount: Decimal(100),
+                    repaidAmount: Decimal(0),
+                    costAmount: Decimal(0),
+                    sourceRecordIds: [record.id]
+                )
+            ]
         )
         XCTAssertEqual(
             try useCases.queryStatisticsSummary(accountMonth: "2026-04").expenseByType,
