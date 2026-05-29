@@ -867,15 +867,19 @@ struct InvestmentFormInput: Equatable {
 
     func toChanges() throws -> InvestmentTransactionChanges {
         try validateRequiredFields()
+        let tradeAmount = try parseOptionalDecimal(tradeAmountText, fieldName: "交易金额")
+        let tradeShare = try parseOptionalDecimal(tradeShareText, fieldName: "交易份额")
+        let nav = try parseOptionalDecimal(navText, fieldName: "单位净值")
+        let normalizedNote: String? = note.isEmpty ? nil : note
         return InvestmentTransactionChanges(
             accountMonth: accountMonth,
             occurredAt: try parseDate(),
             fundName: fundName,
             transactionType: transactionType,
-            tradeAmount: try parseOptionalDecimal(tradeAmountText, fieldName: "交易金额"),
-            tradeShare: try parseOptionalDecimal(tradeShareText, fieldName: "交易份额"),
-            nav: try parseOptionalDecimal(navText, fieldName: "单位净值"),
-            note: note
+            tradeAmount: tradeAmount,
+            tradeShare: tradeShare,
+            nav: nav,
+            note: normalizedNote
         )
     }
 

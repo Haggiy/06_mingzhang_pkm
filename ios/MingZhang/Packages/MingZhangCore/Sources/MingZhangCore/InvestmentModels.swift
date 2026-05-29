@@ -103,20 +103,20 @@ public struct InvestmentTransactionChanges: Equatable, Sendable {
     public var occurredAt: Date?
     public var fundName: String?
     public var transactionType: InvestmentTransactionType?
-    public var tradeAmount: Decimal?
-    public var tradeShare: Decimal?
-    public var nav: Decimal?
-    public var note: String?
+    public var tradeAmount: Decimal??
+    public var tradeShare: Decimal??
+    public var nav: Decimal??
+    public var note: String??
 
     public init(
         accountMonth: String? = nil,
         occurredAt: Date? = nil,
         fundName: String? = nil,
         transactionType: InvestmentTransactionType? = nil,
-        tradeAmount: Decimal? = nil,
-        tradeShare: Decimal? = nil,
-        nav: Decimal? = nil,
-        note: String? = nil
+        tradeAmount: Decimal?? = nil,
+        tradeShare: Decimal?? = nil,
+        nav: Decimal?? = nil,
+        note: String?? = nil
     ) {
         self.accountMonth = accountMonth
         self.occurredAt = occurredAt

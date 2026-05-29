@@ -634,6 +634,21 @@ final class InvestmentLedgerUITests: XCTestCase {
         app.launchEnvironment["MZ_SETUP_\(index)_DETAIL"] = detail
     }
 
+    func openInvestmentLedgerFromBalance() {
+        XCTAssertTrue(app.waitForMingZhangTab("资产负债").exists)
+        app.waitForMingZhangTab("资产负债").tap()
+
+        let entry = app.buttons["investment_asset_entry"].firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 10))
+        entry.tap()
+
+        let fundRow = app.buttons["investment_fund_row_沪深300指数A"].firstMatch
+        XCTAssertTrue(fundRow.waitForExistence(timeout: 10))
+        fundRow.tap()
+
+        XCTAssertTrue(app.staticTexts["基金投资明细账"].waitForExistence(timeout: 10))
+    }
+
     func testInvestmentLedgerShowsInvestmentAssetEntryAndFundRow() {
         app.launch()
 
@@ -668,8 +683,65 @@ final class InvestmentLedgerUITests: XCTestCase {
         if feedRow.waitForExistence(timeout: 5) {
             feedRow.tap()
             XCTAssertTrue(app.staticTexts["记录详情"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["投资来源"].waitForExistence(timeout: 5))
+            let traceLedgerButton = app.buttons["investment_feed_trace_ledger_button"]
+            XCTAssertTrue(traceLedgerButton.waitForExistence(timeout: 5))
             captureV51Screenshot("21-只读记录详情")
+            traceLedgerButton.tap()
+            XCTAssertTrue(app.staticTexts["基金投资明细账"].waitForExistence(timeout: 5))
         }
+    }
+
+    func testInvestmentTransactionFormCreatesEditsAndDeletesTransaction() {
+        app.launch()
+        openInvestmentLedgerFromBalance()
+
+        tapVisibleButton(identifier: "investment_add_transaction_button", timeout: 10)
+        XCTAssertTrue(app.staticTexts["新增基金交易"].waitForExistence(timeout: 5))
+
+        let amountField = app.textFields["investment_trade_amount_field"].firstMatch
+        XCTAssertTrue(amountField.waitForExistence(timeout: 5))
+        amountField.tap()
+        amountField.typeText("150")
+
+        let shareField = app.textFields["investment_trade_share_field"].firstMatch
+        XCTAssertTrue(shareField.waitForExistence(timeout: 5))
+        shareField.tap()
+        shareField.typeText("100")
+
+        let noteField = app.textFields["investment_note_field"].firstMatch
+        XCTAssertTrue(noteField.waitForExistence(timeout: 5))
+        noteField.tap()
+        noteField.typeText("UI新增买入")
+
+        app.swipeUp()
+        tapVisibleButton(identifier: "investment_transaction_save_button", timeout: 5)
+
+        let createdRow = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "UI新增买入")).firstMatch
+        XCTAssertTrue(createdRow.waitForExistence(timeout: 10))
+        createdRow.tap()
+
+        XCTAssertTrue(app.staticTexts["编辑基金交易"].waitForExistence(timeout: 5))
+        let editNoteField = app.textFields["investment_note_field"].firstMatch
+        XCTAssertTrue(editNoteField.waitForExistence(timeout: 5))
+        editNoteField.tap()
+        editNoteField.typeText("编辑")
+        app.swipeUp()
+        tapVisibleButton(identifier: "investment_transaction_save_button", timeout: 5)
+
+        let editedRow = app.buttons
+            .matching(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "UI新增买入", "编辑"))
+            .firstMatch
+        XCTAssertTrue(editedRow.waitForExistence(timeout: 10))
+        editedRow.tap()
+
+        tapVisibleButton(identifier: "investment_transaction_delete_button", timeout: 5)
+        let confirmDelete = app.buttons["确认删除交易"].firstMatch
+        XCTAssertTrue(confirmDelete.waitForExistence(timeout: 5))
+        confirmDelete.tap()
+
+        XCTAssertTrue(app.staticTexts["基金投资明细账"].waitForExistence(timeout: 10))
+        XCTAssertFalse(editedRow.waitForExistence(timeout: 5))
     }
 
     func testLiabilityDetailCreatesRepaymentAndRefreshesSourceRecords() {

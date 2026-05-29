@@ -2990,7 +2990,9 @@ struct ImportTraceSection: View {
 }
 
 struct ReadOnlyRecordDetailView: View {
+    @EnvironmentObject private var store: LedgerStore
     let record: JournalRecord
+    @State private var investmentTrace: InvestmentFeedTrace?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -3025,11 +3027,87 @@ struct ReadOnlyRecordDetailView: View {
                     SummaryLine(title: "编辑边界", value: "请回到来源记录、规则或投资明细修改")
                 }
 
-                MZPrimaryButton(title: "查看来源", isDisabled: true) {}
+                if record.recordSource == .investmentFeed {
+                    InvestmentFeedTraceSection(trace: investmentTrace)
+                } else {
+                    MZPrimaryButton(title: "查看来源", isDisabled: true) {}
+                }
             }
         }
         .navigationBarBackButtonHidden(true)
         .background(MZTheme.page)
+        .onAppear(perform: loadInvestmentTraceIfNeeded)
+    }
+
+    private func loadInvestmentTraceIfNeeded() {
+        guard record.recordSource == .investmentFeed else { return }
+        investmentTrace = store.loadInvestmentTrace(recordId: record.id)
+    }
+}
+
+struct InvestmentFeedTraceSection: View {
+    let trace: InvestmentFeedTrace?
+
+    private var transactions: [InvestmentTransaction] {
+        trace?.transactions ?? []
+    }
+
+    private var fundName: String? {
+        transactions.first?.fundName
+    }
+
+    var body: some View {
+        MZCard(padding: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("投资来源")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(MZTheme.ink)
+                    Text("投资回填流水只读，修改请回到基金投资明细账")
+                        .font(.caption)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                }
+                .padding(16)
+
+                if transactions.isEmpty {
+                    MZDivider()
+                    MZEmptyState(title: "暂无投资来源", systemImage: "tray")
+                        .frame(maxWidth: .infinity)
+                        .padding(20)
+                } else {
+                    ForEach(Array(transactions.enumerated()), id: \.element.id) { index, transaction in
+                        MZDivider()
+                        MZIconRow(
+                            title: "\(transaction.transactionType.displayName) · \(transaction.fundName)",
+                            subtitle: transaction.sourceExplanationText,
+                            systemImage: transaction.transactionType.systemImage,
+                            trailing: transaction.traceAmountText
+                        )
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .accessibilityIdentifier("investment_feed_trace_transaction_\(index)")
+                    }
+
+                    if let fundName {
+                        MZDivider()
+                        NavigationLink {
+                            InvestmentLedgerView(fundName: fundName)
+                        } label: {
+                            MZIconRow(
+                                title: "查看投资明细账",
+                                subtitle: "在基金投资明细账新增、编辑或删除交易",
+                                systemImage: "book",
+                                trailing: "进入"
+                            )
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("investment_feed_trace_ledger_button")
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -3498,6 +3576,18 @@ struct InvestmentLedgerView: View {
     @State private var transactions: [InvestmentTransaction] = []
     @State private var summary: InvestmentMonthlySummary?
     @State private var feedRecords: [JournalRecord] = []
+    @State private var isShowingCreateForm = false
+    @State private var editingTransaction: InvestmentTransaction?
+
+    private var isEditingTransactionPresented: Binding<Bool> {
+        Binding {
+            editingTransaction != nil
+        } set: { isPresented in
+            if !isPresented {
+                editingTransaction = nil
+            }
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -3578,8 +3668,14 @@ struct InvestmentLedgerView: View {
                             }
                             MZDivider()
                             ForEach(Array(transactions.enumerated()), id: \.element.id) { index, transaction in
-                                InvestmentTransactionRow(transaction: transaction)
-                                    .padding(.horizontal, 16)
+                                Button {
+                                    editingTransaction = transaction
+                                } label: {
+                                    InvestmentTransactionRow(transaction: transaction)
+                                        .padding(.horizontal, 16)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("investment_transaction_row_\(transaction.transactionType.rawValue)_\(transaction.id.uuidString.prefix(8))")
                                 if index < transactions.count - 1 {
                                     MZDivider().padding(.horizontal, 16)
                                 }
@@ -3592,14 +3688,27 @@ struct InvestmentLedgerView: View {
 
                 MZLightButton(title: "查看投资明细账", systemImage: "chevron.right") {}
                     .disabled(true)
-                MZPrimaryButton(title: "新增交易", isDisabled: true) {}
+                MZPrimaryButton(title: "新增交易") {
+                    isShowingCreateForm = true
+                }
                 .accessibilityIdentifier("investment_add_transaction_button")
             }
         }
         .background(MZTheme.page)
         .navigationBarBackButtonHidden(true)
+        .navigationDestination(isPresented: $isShowingCreateForm) {
+            InvestmentTransactionFormView(mode: .create(fundName: fundName, accountMonth: store.accountMonth))
+        }
+        .navigationDestination(isPresented: isEditingTransactionPresented) {
+            if let editingTransaction {
+                InvestmentTransactionFormView(mode: .edit(editingTransaction))
+            }
+        }
         .onAppear(perform: loadData)
         .onChange(of: store.investmentHoldings.map(\.id)) {
+            loadData()
+        }
+        .onChange(of: store.investmentTransactions.map(\.id)) {
             loadData()
         }
         .onChange(of: store.records.map(\.id)) {
@@ -3615,6 +3724,200 @@ struct InvestmentLedgerView: View {
         transactions = store.loadInvestmentTransactions(fundName: fundName)
         summary = store.loadInvestmentMonthlySummary(fundName: fundName)
         feedRecords = store.loadInvestmentFeedRecords(fundName: fundName)
+    }
+}
+
+struct InvestmentTransactionFormView: View {
+    enum Mode {
+        case create(fundName: String, accountMonth: String)
+        case edit(InvestmentTransaction)
+    }
+
+    @EnvironmentObject private var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
+    let mode: Mode
+    @State private var input: InvestmentFormInput
+    @State private var isShowingDeleteConfirmation = false
+
+    init(mode: Mode) {
+        self.mode = mode
+        switch mode {
+        case .create(let fundName, let accountMonth):
+            var draft = InvestmentFormInput()
+            draft.accountMonth = accountMonth
+            draft.occurredDateText = "\(accountMonth)-10"
+            draft.fundName = fundName
+            _input = State(initialValue: draft)
+        case .edit(let transaction):
+            _input = State(initialValue: .from(transaction: transaction))
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: modeTitle)
+            MZPage {
+                MZCard {
+                    MZFieldRow(title: "账月", required: true) {
+                        TextField("YYYY-MM", text: $input.accountMonth)
+                            .textInputAutocapitalization(.never)
+                            .accessibilityIdentifier("investment_account_month_field")
+                    }
+                    MZDivider()
+                    MZFieldRow(title: "日期", required: true) {
+                        TextField("YYYY-MM-DD", text: $input.occurredDateText)
+                            .textInputAutocapitalization(.never)
+                            .accessibilityIdentifier("investment_occurred_date_field")
+                    }
+                    MZDivider()
+                    MZFieldRow(title: "标的名称", required: true) {
+                        TextField("基金名称", text: $input.fundName)
+                            .accessibilityIdentifier("investment_fund_name_field")
+                    }
+                    MZDivider()
+                    transactionTypePicker
+                }
+
+                MZCard {
+                    if input.transactionType == .buy || input.transactionType == .sell {
+                        MZFieldRow(title: "交易金额", required: true) {
+                            TextField("交易金额", text: $input.tradeAmountText)
+                                .keyboardType(.numbersAndPunctuation)
+                                .accessibilityIdentifier("investment_trade_amount_field")
+                        }
+                        MZDivider()
+                        MZFieldRow(title: "交易份额", required: true) {
+                            TextField("交易份额", text: $input.tradeShareText)
+                                .keyboardType(.numbersAndPunctuation)
+                                .accessibilityIdentifier("investment_trade_share_field")
+                        }
+                        MZDivider()
+                    }
+                    MZFieldRow(title: "单位净值", required: input.transactionType == .nav) {
+                        TextField("单位净值", text: $input.navText)
+                            .keyboardType(.decimalPad)
+                            .accessibilityIdentifier("investment_nav_field")
+                    }
+                    MZDivider()
+                    MZFieldRow(title: "备注") {
+                        TextField("备注", text: $input.note)
+                            .accessibilityIdentifier("investment_note_field")
+                    }
+                }
+
+                if let transaction = existingTransaction {
+                    MZCard(spacing: 0) {
+                        Text("系统计算")
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(MZTheme.ink)
+                            .padding(.bottom, 6)
+                        SummaryLine(title: "入账金额", value: transaction.bookAmount?.moneyText ?? "-")
+                        MZDivider()
+                        SummaryLine(title: "已实现收益", value: transaction.realizedGain.moneyText)
+                        MZDivider()
+                        SummaryLine(title: "已实现亏损", value: transaction.realizedLoss.moneyText)
+                        MZDivider()
+                        SummaryLine(title: "持有份额", value: transaction.holdingShare.moneyText)
+                        MZDivider()
+                        SummaryLine(title: "平均成本", value: transaction.averageCost?.moneyText ?? "-")
+                        MZDivider()
+                        SummaryLine(title: "BV", value: transaction.bookValue.moneyText)
+                        MZDivider()
+                        SummaryLine(title: "PV", value: transaction.presentValue?.moneyText ?? "-")
+                    }
+                }
+
+                MZCard {
+                    SummaryLine(title: "来源", value: "基金投资明细")
+                    MZDivider()
+                    SummaryLine(title: "编辑边界", value: "修改交易事实后系统重算回填流水")
+                }
+
+                MZPrimaryButton(title: "保存交易") {
+                    if save() {
+                        dismiss()
+                    }
+                }
+                .accessibilityIdentifier("investment_transaction_save_button")
+
+                if case .edit = mode {
+                    Button("删除交易", role: .destructive) {
+                        isShowingDeleteConfirmation = true
+                    }
+                    .font(.headline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .accessibilityIdentifier("investment_transaction_delete_button")
+                }
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+        .confirmationDialog("确认删除交易？", isPresented: $isShowingDeleteConfirmation, titleVisibility: .visible) {
+            Button("确认删除交易", role: .destructive) {
+                if case .edit(let transaction) = mode, store.deleteInvestmentTransaction(id: transaction.id) {
+                    dismiss()
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("删除后会重新计算投资明细、投资持仓和相关账月的回填流水。")
+        }
+        .onChange(of: input.transactionType) {
+            normalizeFieldsForTransactionType()
+        }
+    }
+
+    private var modeTitle: String {
+        switch mode {
+        case .create:
+            return "新增基金交易"
+        case .edit:
+            return "编辑基金交易"
+        }
+    }
+
+    private var existingTransaction: InvestmentTransaction? {
+        if case .edit(let transaction) = mode {
+            return transaction
+        }
+        return nil
+    }
+
+    private var transactionTypePicker: some View {
+        MZFieldRow(title: "交易类别", required: true) {
+            Menu {
+                ForEach(InvestmentTransactionType.allCases, id: \.self) { type in
+                    Button(type.displayName) {
+                        input.transactionType = type
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(input.transactionType.displayName)
+                        .foregroundStyle(MZTheme.ink)
+                    Image(systemName: "chevron.right")
+                        .foregroundStyle(MZTheme.accent)
+                }
+            }
+        }
+        .accessibilityIdentifier("investment_transaction_type_menu")
+    }
+
+    private func save() -> Bool {
+        switch mode {
+        case .create:
+            return store.createInvestmentTransaction(input: input)
+        case .edit(let transaction):
+            return store.updateInvestmentTransaction(id: transaction.id, input: input)
+        }
+    }
+
+    private func normalizeFieldsForTransactionType() {
+        if input.transactionType == .nav {
+            input.tradeAmountText = ""
+            input.tradeShareText = ""
+        }
     }
 }
 
@@ -3664,6 +3967,12 @@ struct InvestmentTransactionRow: View {
                 Text("\(transaction.accountMonth) / 份额 \((transaction.tradeShare ?? transaction.holdingShare).moneyText)")
                     .font(.caption)
                     .foregroundStyle(MZTheme.secondaryInk)
+                if let note = transaction.note, !note.isEmpty {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                        .lineLimit(1)
+                }
             }
             Spacer()
             Text((transaction.tradeAmount ?? transaction.nav ?? 0).moneyText)
@@ -5253,6 +5562,44 @@ private extension InvestmentTransactionType {
             return "卖出"
         case .nav:
             return "净值"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .buy:
+            return "plus.circle"
+        case .sell:
+            return "minus.circle"
+        case .nav:
+            return "chart.line.uptrend.xyaxis"
+        }
+    }
+}
+
+private extension InvestmentTransaction {
+    var traceAmountText: String {
+        if let bookAmount {
+            return bookAmount.moneyText
+        }
+        if let tradeAmount {
+            return tradeAmount.moneyText
+        }
+        if let nav {
+            return nav.moneyText
+        }
+        return "-"
+    }
+
+    var sourceExplanationText: String {
+        switch transactionType {
+        case .buy:
+            return "买入金额 \(tradeAmount?.moneyText ?? "-") / 份额 \(tradeShare?.moneyText ?? "-")"
+        case .sell:
+            let shareText = tradeShare.map { $0.absoluteValue.moneyText } ?? "-"
+            return "卖出按平均成本法入账 \(bookAmount?.moneyText ?? "-") / 份额 \(shareText)"
+        case .nav:
+            return "净值 \(nav?.moneyText ?? "-") / 持仓份额 \(holdingShare.moneyText)"
         }
     }
 }

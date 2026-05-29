@@ -143,6 +143,50 @@ final class P1InvestmentLedgerTests: XCTestCase {
         XCTAssertEqual(try useCases.queryBalanceSummary(accountMonth: "2026-04").investmentItems.first?.amount, Decimal(300))
     }
 
+    func testUpdatingInvestmentTransactionToNavClearsTradeFieldsAndRemovesFeeds() throws {
+        let database = try LedgerDatabase.inMemory()
+        let useCases = LedgerUseCases(database: database)
+        try useCases.initializeLedgerSeed()
+
+        _ = try useCases.createInvestmentTransaction(input: investmentInput(
+            accountMonth: "2026-03",
+            occurredAt: "2026-03-10T00:00:00Z",
+            type: .buy,
+            amount: Decimal(300),
+            share: Decimal(200)
+        ))
+        let sell = try useCases.createInvestmentTransaction(input: investmentInput(
+            accountMonth: "2026-04",
+            occurredAt: "2026-04-10T00:00:00Z",
+            type: .sell,
+            amount: Decimal(-120),
+            share: Decimal(-100)
+        ))
+
+        let clearedAmount: Decimal? = nil
+        let clearedShare: Decimal? = nil
+        let updated = try useCases.updateInvestmentTransaction(
+            id: sell.id,
+            changes: InvestmentTransactionChanges(
+                transactionType: .nav,
+                tradeAmount: clearedAmount,
+                tradeShare: clearedShare,
+                nav: Decimal(string: "1.80")!
+            )
+        )
+
+        XCTAssertEqual(updated.transactionType, .nav)
+        XCTAssertNil(updated.tradeAmount)
+        XCTAssertNil(updated.tradeShare)
+        XCTAssertEqual(updated.nav, Decimal(string: "1.80")!)
+
+        let feedRecords = try useCases.queryJournalRecords(
+            filter: JournalRecordFilter(accountMonths: ["2026-04"], includeEngineRecords: true)
+        ).filter { $0.recordSource == .investmentFeed }
+        XCTAssertTrue(feedRecords.isEmpty)
+        XCTAssertEqual(try useCases.queryBalanceSummary(accountMonth: "2026-04").investmentItems.first?.amount, Decimal(300))
+    }
+
     func testInvestmentReadModelsAndFeedTraceExposeSourceTransactions() throws {
         let database = try LedgerDatabase.inMemory()
         let useCases = LedgerUseCases(database: database)
