@@ -3,6 +3,161 @@ import XCTest
 @testable import MingZhangCore
 
 final class P1LiabilityRepaymentTests: XCTestCase {
+    func testCreateLiabilityCostIncreasesCostAndRemainingLiabilityWithoutTouchingCash() throws {
+        let useCases = try makeUseCases()
+        let expense = try useCases.createManualRecord(input: creditCardExpense())
+
+        let cost = try useCases.createLiabilityCost(input: CreateLiabilityCostInput(
+            accountMonth: "2026-04",
+            occurredAt: try Date.iso8601("2026-04-09T09:00:00Z"),
+            liabilityObjectKey: "liability:广发卡",
+            amount: Decimal(30),
+            kind: .interest,
+            note: "广发卡利息"
+        ))
+
+        XCTAssertEqual(cost.recordSource, .manual)
+        XCTAssertEqual(cost.paymentMethodName, "广发卡")
+        XCTAssertEqual(cost.paymentTypeName, "财务费用开支")
+        XCTAssertEqual(cost.paymentDetailName, "金融利息支出")
+        XCTAssertEqual(cost.objectKey, "liability:广发卡")
+
+        let balance = try useCases.queryBalanceSummary(accountMonth: "2026-04")
+        XCTAssertEqual(balance.cashBalance, Decimal(0))
+        XCTAssertEqual(balance.liabilityItems, [
+            LiabilityBalanceItem(
+                name: "广发卡",
+                objectKey: "liability:广发卡",
+                amount: Decimal(130),
+                formedAmount: Decimal(100),
+                repaidAmount: Decimal(0),
+                costAmount: Decimal(30),
+                sourceRecordIds: [expense.id, cost.id]
+            )
+        ])
+
+        let detail = try useCases.queryLiabilityDetail(accountMonth: "2026-04", objectKey: "liability:广发卡")
+        XCTAssertEqual(detail.formedAmount, Decimal(100))
+        XCTAssertEqual(detail.repaidAmount, Decimal(0))
+        XCTAssertEqual(detail.costAmount, Decimal(30))
+        XCTAssertEqual(detail.remainingAmount, Decimal(130))
+        XCTAssertEqual(detail.formationSourceRecordIds, [expense.id])
+        XCTAssertEqual(detail.costSourceRecordIds, [cost.id])
+        XCTAssertEqual(detail.sourceRecordIds, [expense.id, cost.id])
+
+        XCTAssertEqual(try useCases.queryHomeSummary(accountMonth: "2026-04").expenseTotal, Decimal(30))
+        XCTAssertEqual(try useCases.queryStatisticsSummary(accountMonth: "2026-04").expenseByType, [
+            ExpenseTypeSummary(typeName: "财务费用开支", amount: Decimal(30), sourceRecordIds: [cost.id])
+        ])
+    }
+
+    func testLiabilityCostAndRepaymentCoexistInSameLiabilityObject() throws {
+        let useCases = try makeUseCases()
+        let expense = try useCases.createManualRecord(input: creditCardExpense())
+        let cost = try useCases.createLiabilityCost(input: CreateLiabilityCostInput(
+            accountMonth: "2026-04",
+            occurredAt: try Date.iso8601("2026-04-09T09:00:00Z"),
+            liabilityObjectKey: "liability:广发卡",
+            amount: Decimal(30),
+            kind: .fee,
+            note: "广发卡手续费"
+        ))
+        let repayment = try useCases.createLiabilityRepayment(input: CreateLiabilityRepaymentInput(
+            accountMonth: "2026-04",
+            occurredAt: try Date.iso8601("2026-04-10T09:00:00Z"),
+            liabilityObjectKey: "liability:广发卡",
+            amount: Decimal(80),
+            paymentMethodName: "电子钱包余额"
+        ))
+
+        XCTAssertEqual(cost.paymentDetailName, "金融手续费与罚款")
+
+        let balance = try useCases.queryBalanceSummary(accountMonth: "2026-04")
+        XCTAssertEqual(balance.cashBalance, Decimal(-80))
+        XCTAssertEqual(balance.liabilityItems, [
+            LiabilityBalanceItem(
+                name: "广发卡",
+                objectKey: "liability:广发卡",
+                amount: Decimal(50),
+                formedAmount: Decimal(100),
+                repaidAmount: Decimal(80),
+                costAmount: Decimal(30),
+                sourceRecordIds: [expense.id, repayment.id, cost.id]
+            )
+        ])
+    }
+
+    func testUpdatingAndDeletingLiabilityCostSynchronizesDerivedResults() throws {
+        let useCases = try makeUseCases()
+        let expense = try useCases.createManualRecord(input: creditCardExpense())
+        let cost = try useCases.createLiabilityCost(input: CreateLiabilityCostInput(
+            accountMonth: "2026-04",
+            occurredAt: try Date.iso8601("2026-04-09T09:00:00Z"),
+            liabilityObjectKey: "liability:广发卡",
+            amount: Decimal(30),
+            kind: .interest
+        ))
+
+        _ = try useCases.updateJournalRecord(id: cost.id, changes: JournalRecordChanges(amount: Decimal(10)))
+
+        var balance = try useCases.queryBalanceSummary(accountMonth: "2026-04")
+        XCTAssertEqual(balance.liabilityItems, [
+            LiabilityBalanceItem(
+                name: "广发卡",
+                objectKey: "liability:广发卡",
+                amount: Decimal(110),
+                formedAmount: Decimal(100),
+                repaidAmount: Decimal(0),
+                costAmount: Decimal(10),
+                sourceRecordIds: [expense.id, cost.id]
+            )
+        ])
+
+        XCTAssertThrowsError(try useCases.updateJournalRecord(id: cost.id, changes: JournalRecordChanges(amount: Decimal(0)))) { error in
+            XCTAssertEqual(error as? MingZhangError, .validation("负债成本金额必须大于 0"))
+        }
+
+        try useCases.deleteJournalRecord(id: cost.id)
+
+        balance = try useCases.queryBalanceSummary(accountMonth: "2026-04")
+        XCTAssertEqual(balance.liabilityItems, [
+            LiabilityBalanceItem(
+                name: "广发卡",
+                objectKey: "liability:广发卡",
+                amount: Decimal(100),
+                formedAmount: Decimal(100),
+                repaidAmount: Decimal(0),
+                costAmount: Decimal(0),
+                sourceRecordIds: [expense.id]
+            )
+        ])
+        XCTAssertTrue(try useCases.queryStatisticsSummary(accountMonth: "2026-04").expenseByType.isEmpty)
+    }
+
+    func testLiabilityCostValidationRequiresPositiveAmountAndValidObject() throws {
+        let useCases = try makeUseCases()
+
+        XCTAssertThrowsError(try useCases.createLiabilityCost(input: CreateLiabilityCostInput(
+            accountMonth: "2026-04",
+            occurredAt: try Date.iso8601("2026-04-09T09:00:00Z"),
+            liabilityObjectKey: "liability:广发卡",
+            amount: Decimal(0),
+            kind: .interest
+        ))) { error in
+            XCTAssertEqual(error as? MingZhangError, .validation("负债成本金额必须大于 0"))
+        }
+
+        XCTAssertThrowsError(try useCases.createLiabilityCost(input: CreateLiabilityCostInput(
+            accountMonth: "2026-04",
+            occurredAt: try Date.iso8601("2026-04-09T09:00:00Z"),
+            liabilityObjectKey: "liability:电子钱包余额",
+            amount: Decimal(10),
+            kind: .interest
+        ))) { error in
+            XCTAssertEqual(error as? MingZhangError, .validation("负债对象必须指向负债类收付手段"))
+        }
+    }
+
     func testCreateLiabilityRepaymentReducesCashAndLiabilityAcrossMonths() throws {
         let useCases = try makeUseCases()
         let expense = try useCases.createManualRecord(input: creditCardExpense())

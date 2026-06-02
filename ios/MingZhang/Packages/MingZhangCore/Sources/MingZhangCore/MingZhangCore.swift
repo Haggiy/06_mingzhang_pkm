@@ -383,21 +383,49 @@ public struct BalanceItem: Equatable, Sendable {
 
 public typealias LiabilityBalanceItem = BalanceItem
 
+public struct DeferredBalanceItem: Equatable, Sendable {
+    public var name: String
+    public var objectKey: String
+    public var amount: Decimal
+    public var formedAmount: Decimal
+    public var releasedAmount: Decimal
+    public var sourceRecordIds: [UUID]
+
+    public init(
+        name: String,
+        objectKey: String,
+        amount: Decimal,
+        formedAmount: Decimal,
+        releasedAmount: Decimal,
+        sourceRecordIds: [UUID]
+    ) {
+        self.name = name
+        self.objectKey = objectKey
+        self.amount = amount
+        self.formedAmount = formedAmount
+        self.releasedAmount = releasedAmount
+        self.sourceRecordIds = sourceRecordIds
+    }
+}
+
 public struct BalanceSummary: Equatable, Sendable {
     public var cashBalance: Decimal
     public var cashSourceRecordIds: [UUID]
     public var liabilityItems: [BalanceItem]
+    public var deferredItems: [DeferredBalanceItem]
     public var investmentItems: [BalanceItem]
 
     public init(
         cashBalance: Decimal,
         cashSourceRecordIds: [UUID] = [],
         liabilityItems: [BalanceItem],
+        deferredItems: [DeferredBalanceItem] = [],
         investmentItems: [BalanceItem] = []
     ) {
         self.cashBalance = cashBalance
         self.cashSourceRecordIds = cashSourceRecordIds
         self.liabilityItems = liabilityItems
+        self.deferredItems = deferredItems
         self.investmentItems = investmentItems
     }
 }
@@ -424,6 +452,83 @@ public struct CreateLiabilityRepaymentInput: Equatable, Sendable {
         self.amount = amount
         self.paymentMethodName = paymentMethodName
         self.note = note
+    }
+}
+
+public enum LiabilityCostKind: String, Codable, CaseIterable, Equatable, Sendable {
+    case interest
+    case fee
+
+    var paymentDetailSeedKey: String {
+        switch self {
+        case .interest:
+            "finance_interest"
+        case .fee:
+            "finance_fee_penalty"
+        }
+    }
+}
+
+public struct CreateLiabilityCostInput: Equatable, Sendable {
+    public var accountMonth: String
+    public var occurredAt: Date
+    public var liabilityObjectKey: String
+    public var amount: Decimal
+    public var kind: LiabilityCostKind
+    public var note: String?
+
+    public init(
+        accountMonth: String,
+        occurredAt: Date,
+        liabilityObjectKey: String,
+        amount: Decimal,
+        kind: LiabilityCostKind,
+        note: String? = nil
+    ) {
+        self.accountMonth = accountMonth
+        self.occurredAt = occurredAt
+        self.liabilityObjectKey = liabilityObjectKey
+        self.amount = amount
+        self.kind = kind
+        self.note = note
+    }
+}
+
+public struct CreateDeferredReleaseInput: Equatable, Sendable {
+    public var accountMonth: String
+    public var occurredAt: Date
+    public var deferredObjectKey: String
+    public var amount: Decimal
+    public var expensePaymentTypeName: String
+    public var expensePaymentDetailName: String
+    public var note: String?
+
+    public init(
+        accountMonth: String,
+        occurredAt: Date,
+        deferredObjectKey: String,
+        amount: Decimal,
+        expensePaymentTypeName: String,
+        expensePaymentDetailName: String,
+        note: String? = nil
+    ) {
+        self.accountMonth = accountMonth
+        self.occurredAt = occurredAt
+        self.deferredObjectKey = deferredObjectKey
+        self.amount = amount
+        self.expensePaymentTypeName = expensePaymentTypeName
+        self.expensePaymentDetailName = expensePaymentDetailName
+        self.note = note
+    }
+}
+
+public struct DeferredReleaseResult: Equatable, Sendable {
+    public var assetReleaseRecord: JournalRecord
+    public var expenseRecord: JournalRecord
+
+    public init(assetReleaseRecord: JournalRecord, expenseRecord: JournalRecord) {
+        self.assetReleaseRecord = assetReleaseRecord
+        self.expenseRecord = expenseRecord
     }
 }
 
@@ -1529,6 +1634,118 @@ public final class LedgerUseCases: @unchecked Sendable {
     }
 
     @discardableResult
+    public func createLiabilityCost(input: CreateLiabilityCostInput) throws -> JournalRecord {
+        let seed = try database.writer.read { db -> (paymentMethodName: String, paymentDetailName: String) in
+            guard input.amount > 0 else {
+                throw MingZhangError.validation("负债成本金额必须大于 0")
+            }
+            let method = try liabilityPaymentMethod(db, objectKey: input.liabilityObjectKey)
+            let type = try requirePaymentTypeBySeedKey(db, seedKey: "finance_expense")
+            let detail = try requirePaymentDetailBySeedKey(db, seedKey: input.kind.paymentDetailSeedKey)
+            guard detail.paymentTypeId == type.id, isLiabilityCost(paymentDetail: detail) else {
+                throw MingZhangError.validation("负债成本必须使用金融费用类型明细")
+            }
+            return (method.name, detail.name)
+        }
+
+        return try createManualRecord(input: CreateManualRecordInput(
+            accountMonth: input.accountMonth,
+            occurredAt: input.occurredAt,
+            paymentMethodName: seed.paymentMethodName,
+            amount: input.amount,
+            paymentTypeName: "财务费用开支",
+            paymentDetailName: seed.paymentDetailName,
+            objectKey: input.liabilityObjectKey,
+            note: input.note
+        ))
+    }
+
+    @discardableResult
+    public func createDeferredRelease(input: CreateDeferredReleaseInput) throws -> DeferredReleaseResult {
+        let result = try database.writer.write { db in
+            try validateAccountMonth(input.accountMonth)
+            guard input.amount > 0 else {
+                throw MingZhangError.validation("递延释放金额必须大于 0")
+            }
+            let objectKey = try normalizedDeferredObjectKey(input.deferredObjectKey)
+            let accountingMethod = try requirePaymentMethodBySeedKey(db, seedKey: "accounting")
+            let assetType = try requirePaymentTypeBySeedKey(db, seedKey: "asset_outflow")
+            let assetDetail = try requirePaymentDetailBySeedKey(db, seedKey: "asset_deferred_expense")
+            guard isDeferredAsset(paymentDetail: assetDetail) else {
+                throw MingZhangError.validation("递延释放必须使用递延资产类型明细")
+            }
+            let expenseType = try requirePaymentType(db, name: input.expensePaymentTypeName)
+            let expenseDetail = try requirePaymentDetail(db, name: input.expensePaymentDetailName, paymentTypeId: expenseType.id)
+            guard expenseType.element == .expense else {
+                throw MingZhangError.validation("递延释放确认消费必须使用支出类收付类型")
+            }
+            try requireActive(accountingMethod)
+            try requireActive(assetType)
+            try requireActive(assetDetail)
+            try requireActive(expenseType)
+            try requireActive(expenseDetail)
+
+            let now = Date()
+            let assetReleaseRecord = JournalRecord(
+                id: UUID(),
+                accountMonth: input.accountMonth,
+                occurredAt: input.occurredAt,
+                paymentMethodId: accountingMethod.id,
+                paymentMethodName: accountingMethod.name,
+                amount: -input.amount,
+                paymentTypeId: assetType.id,
+                paymentTypeName: assetType.name,
+                paymentDetailId: assetDetail.id,
+                paymentDetailName: assetDetail.name,
+                note: input.note,
+                recordSource: .manual,
+                recordKind: .carryForward,
+                carryForwardRole: .accountingSkeleton,
+                engineFamily: nil,
+                engineKey: nil,
+                objectKey: objectKey,
+                sourceRecordIds: [],
+                sourceInvestmentTransactionIds: [],
+                sourceImportBatchId: nil,
+                sourceImportCandidateId: nil,
+                createdAt: now,
+                updatedAt: now
+            )
+            let expenseRecord = JournalRecord(
+                id: UUID(),
+                accountMonth: input.accountMonth,
+                occurredAt: input.occurredAt,
+                paymentMethodId: accountingMethod.id,
+                paymentMethodName: accountingMethod.name,
+                amount: input.amount,
+                paymentTypeId: expenseType.id,
+                paymentTypeName: expenseType.name,
+                paymentDetailId: expenseDetail.id,
+                paymentDetailName: expenseDetail.name,
+                note: input.note,
+                recordSource: .manual,
+                recordKind: .carryForward,
+                carryForwardRole: .accountingSkeleton,
+                engineFamily: nil,
+                engineKey: nil,
+                objectKey: objectKey,
+                sourceRecordIds: [],
+                sourceInvestmentTransactionIds: [],
+                sourceImportBatchId: nil,
+                sourceImportCandidateId: nil,
+                createdAt: now,
+                updatedAt: now
+            )
+            try insertJournalRecord(db, record: assetReleaseRecord)
+            try insertJournalRecord(db, record: expenseRecord)
+            return DeferredReleaseResult(assetReleaseRecord: assetReleaseRecord, expenseRecord: expenseRecord)
+        }
+
+        _ = try recalculateAccountMonths(startingAt: input.accountMonth)
+        return result
+    }
+
+    @discardableResult
     public func updateJournalRecord(id: UUID, changes: JournalRecordChanges) throws -> JournalRecord {
         let updateContext = try database.writer.write { db in
             var record = try requireJournalRecord(db, id: id)
@@ -1742,6 +1959,23 @@ public final class LedgerUseCases: @unchecked Sendable {
                 }
                 .sorted { $0.name < $1.name }
 
+            let deferredItems = try engineRecords
+                .filter { $0.engineFamily == .deferred }
+                .map { record -> DeferredBalanceItem in
+                    let objectKey = try normalizedDeferredObjectKey(record.objectKey ?? "")
+                    let accumulator = try deferredAccumulators(db, through: accountMonth)[objectKey] ??
+                        DeferredMovementAccumulator(name: try deferredName(from: objectKey), objectKey: objectKey)
+                    return DeferredBalanceItem(
+                        name: accumulator.name,
+                        objectKey: accumulator.objectKey,
+                        amount: roundCurrency(accumulator.remainingAmount),
+                        formedAmount: roundCurrency(accumulator.formedAmount),
+                        releasedAmount: roundCurrency(accumulator.releasedAmount),
+                        sourceRecordIds: accumulator.sourceRecordIds
+                    )
+                }
+                .sorted { $0.name < $1.name }
+
             let investments = engineRecords
                 .filter { $0.engineFamily == .investment }
                 .map { record in
@@ -1757,6 +1991,7 @@ public final class LedgerUseCases: @unchecked Sendable {
                 cashBalance: cashBalance,
                 cashSourceRecordIds: cashSourceRecordIds,
                 liabilityItems: liabilities,
+                deferredItems: deferredItems,
                 investmentItems: investments
             )
         }
@@ -2066,6 +2301,24 @@ private struct LiabilityMovementAccumulator {
 
     var sourceRecordIds: [UUID] {
         uniqueUUIDs(formationSourceRecordIds + repaymentSourceRecordIds + costSourceRecordIds)
+    }
+}
+
+private struct DeferredMovementAccumulator {
+    var name: String
+    var objectKey: String
+    var formedAmount: Decimal = 0
+    var releasedAmount: Decimal = 0
+    var formationSourceRecordIds: [UUID] = []
+    var releaseSourceRecordIds: [UUID] = []
+    var hasCurrentMonthMovement = false
+
+    var remainingAmount: Decimal {
+        formedAmount - releasedAmount
+    }
+
+    var sourceRecordIds: [UUID] {
+        uniqueUUIDs(formationSourceRecordIds + releaseSourceRecordIds)
     }
 }
 
@@ -3318,13 +3571,14 @@ private func fetchEngineRecords(_ db: Database, accountMonth: String) throws -> 
         \(selectJournalRecordSQL)
         WHERE journal_records.account_month = ?
           AND journal_records.record_source = ?
-          AND journal_records.engine_family IN (?, ?, ?)
+          AND journal_records.engine_family IN (?, ?, ?, ?)
         ORDER BY journal_records.engine_key ASC
         """, arguments: [
             accountMonth,
             RecordSource.engine.rawValue,
             EngineFamily.cash.rawValue,
             EngineFamily.liability.rawValue,
+            EngineFamily.deferred.rawValue,
             EngineFamily.investment.rawValue
         ])
         .map(journalRecord(from:))
@@ -3409,6 +3663,40 @@ private func liabilityDetailSummary(
     )
 }
 
+private func deferredAccumulators(_ db: Database, through accountMonth: String) throws -> [String: DeferredMovementAccumulator] {
+    let rows = try fetchSourceRecordsWithSemanticsThrough(db, accountMonth: accountMonth)
+    var accumulators: [String: DeferredMovementAccumulator] = [:]
+
+    for row in rows {
+        guard
+            row.paymentType.element == .asset,
+            isDeferredAsset(paymentDetail: row.paymentDetail),
+            let objectKey = try deferredObjectKey(for: row)
+        else {
+            continue
+        }
+
+        let name = try deferredName(from: objectKey)
+        if accumulators[objectKey] == nil {
+            accumulators[objectKey] = DeferredMovementAccumulator(name: name, objectKey: objectKey)
+        }
+
+        if row.record.amount > 0 {
+            accumulators[objectKey]?.formedAmount += row.record.amount
+            accumulators[objectKey]?.formationSourceRecordIds.append(row.record.id)
+        } else if row.record.amount < 0 {
+            accumulators[objectKey]?.releasedAmount += absoluteDecimal(row.record.amount)
+            accumulators[objectKey]?.releaseSourceRecordIds.append(row.record.id)
+        }
+
+        if row.record.accountMonth == accountMonth {
+            accumulators[objectKey]?.hasCurrentMonthMovement = true
+        }
+    }
+
+    return accumulators
+}
+
 private func makeEngineDrafts(_ db: Database, accountMonth: String, rows: [SemanticRecordRow]) throws -> [EngineRecordDraft] {
     var drafts: [EngineRecordDraft] = []
     let occurredAt = monthEndPlaceholder(accountMonth)
@@ -3428,6 +3716,25 @@ private func makeEngineDrafts(_ db: Database, accountMonth: String, rows: [Seman
             engineKey: "\(accountMonth):liability:ending_balance:\(liability.objectKey)",
             objectKey: liability.objectKey,
             sourceRecordIds: liability.sourceRecordIds,
+            sourceInvestmentTransactionIds: []
+        ))
+    }
+
+    let deferredItems = try deferredAccumulators(db, through: accountMonth)
+        .values
+        .filter { $0.remainingAmount != 0 || $0.hasCurrentMonthMovement }
+        .sorted { $0.name < $1.name }
+
+    for deferred in deferredItems {
+        drafts.append(EngineRecordDraft(
+            accountMonth: accountMonth,
+            occurredAt: occurredAt,
+            amount: roundCurrency(deferred.remainingAmount),
+            note: "\(deferred.name) 递延资产期末余额",
+            engineFamily: .deferred,
+            engineKey: "\(accountMonth):deferred:ending_balance:\(deferred.objectKey)",
+            objectKey: deferred.objectKey,
+            sourceRecordIds: deferred.sourceRecordIds,
             sourceInvestmentTransactionIds: []
         ))
     }
@@ -3587,6 +3894,30 @@ private func liabilityPaymentMethod(_ db: Database, objectKey: String) throws ->
     return method
 }
 
+private func deferredObjectKey(for row: SemanticRecordRow) throws -> String? {
+    if let objectKey = normalizedOptionalText(row.record.objectKey) {
+        return try normalizedDeferredObjectKey(objectKey)
+    }
+    guard let note = normalizedOptionalText(row.record.note) else {
+        return nil
+    }
+    return "deferred:\(note)"
+}
+
+private func normalizedDeferredObjectKey(_ objectKey: String) throws -> String {
+    let trimmed = objectKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    _ = try deferredName(from: trimmed)
+    return trimmed
+}
+
+private func deferredName(from objectKey: String) throws -> String {
+    let prefix = "deferred:"
+    guard objectKey.hasPrefix(prefix), objectKey.count > prefix.count else {
+        throw MingZhangError.validation("递延对象必须使用 deferred:<备注> 格式")
+    }
+    return String(objectKey.dropFirst(prefix.count))
+}
+
 private func isLiabilityRepayment(paymentType: PaymentType, paymentDetail: PaymentDetail) -> Bool {
     paymentType.name == "负债类减记" || paymentDetail.semanticTags.contains("账单还款")
 }
@@ -3597,6 +3928,10 @@ private func isLiabilityIncrease(paymentType: PaymentType) -> Bool {
 
 private func isLiabilityCost(paymentDetail: PaymentDetail) -> Bool {
     paymentDetail.semanticTags.contains("金融费用")
+}
+
+private func isDeferredAsset(paymentDetail: PaymentDetail) -> Bool {
+    paymentDetail.semanticTags.contains("递延资产")
 }
 
 private func normalizedTags(_ values: [String]) -> [String] {
@@ -4092,7 +4427,25 @@ private func validateRecordFields(
     }
 
     if let objectKey = normalizedOptionalText(objectKey) {
-        _ = try liabilityPaymentMethod(db, objectKey: objectKey)
+        if objectKey.hasPrefix("liability:") {
+            _ = try liabilityPaymentMethod(db, objectKey: objectKey)
+        } else if objectKey.hasPrefix("deferred:") {
+            _ = try normalizedDeferredObjectKey(objectKey)
+            guard isDeferredAsset(paymentDetail: paymentDetail) || paymentType.element == .expense else {
+                throw MingZhangError.validation("递延对象只能用于递延资产释放或消费确认记录")
+            }
+        } else {
+            throw MingZhangError.validation("对象必须使用 liability:<名称> 或 deferred:<备注> 格式")
+        }
+    }
+
+    if paymentMethod.methodType == .liability &&
+        paymentType.element == .expense &&
+        isLiabilityCost(paymentDetail: paymentDetail) {
+        guard amount > 0 else {
+            throw MingZhangError.validation("负债成本金额必须大于 0")
+        }
+        return
     }
 
     guard isLiabilityRepayment(paymentType: paymentType, paymentDetail: paymentDetail) else {

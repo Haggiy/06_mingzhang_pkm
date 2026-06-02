@@ -530,6 +530,26 @@ final class LedgerStore: ObservableObject {
         }
     }
 
+    func createLiabilityCost(input: JournalFormInput) -> Bool {
+        do {
+            guard let useCases else { return false }
+            let created = try useCases.createLiabilityCost(input: CreateLiabilityCostInput(
+                accountMonth: input.accountMonth,
+                occurredAt: input.occurredAt,
+                liabilityObjectKey: input.liabilityObjectKey,
+                amount: try input.parsedAmount(),
+                kind: input.liabilityCostKind,
+                note: input.note.isEmpty ? nil : input.note
+            ))
+            accountMonth = created.accountMonth
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
     func updateRecord(id: UUID, input: JournalFormInput) -> Bool {
         do {
             guard let useCases else { return false }
@@ -827,6 +847,25 @@ struct JournalFormInput: Equatable {
         )
     }
 
+    static func liabilityCost(
+        item: BalanceItem,
+        accountMonth: String,
+        kind: LiabilityCostKind = .interest,
+        now: Date = Date()
+    ) -> JournalFormInput {
+        let objectKey = item.objectKey ?? "liability:\(item.name)"
+        return JournalFormInput(
+            accountMonth: accountMonth,
+            occurredAt: now,
+            paymentMethodName: item.name,
+            amountText: "",
+            paymentTypeName: "财务费用开支",
+            paymentDetailName: kind.paymentDetailName,
+            liabilityObjectKey: objectKey,
+            note: "\(item.name)\(kind.noteSuffix)"
+        )
+    }
+
     static func from(record: JournalRecord) -> JournalFormInput {
         JournalFormInput(
             accountMonth: record.accountMonth,
@@ -838,6 +877,44 @@ struct JournalFormInput: Equatable {
             liabilityObjectKey: record.objectKey ?? "",
             note: record.note ?? ""
         )
+    }
+
+    var liabilityCostKind: LiabilityCostKind {
+        paymentDetailName == LiabilityCostKind.fee.paymentDetailName ? .fee : .interest
+    }
+
+    mutating func applyLiabilityCostKind(_ kind: LiabilityCostKind) {
+        paymentTypeName = "财务费用开支"
+        paymentDetailName = kind.paymentDetailName
+    }
+}
+
+extension LiabilityCostKind {
+    var displayName: String {
+        switch self {
+        case .interest:
+            "利息"
+        case .fee:
+            "费用"
+        }
+    }
+
+    var paymentDetailName: String {
+        switch self {
+        case .interest:
+            "金融利息支出"
+        case .fee:
+            "金融手续费与罚款"
+        }
+    }
+
+    var noteSuffix: String {
+        switch self {
+        case .interest:
+            "利息"
+        case .fee:
+            "费用"
+        }
     }
 }
 

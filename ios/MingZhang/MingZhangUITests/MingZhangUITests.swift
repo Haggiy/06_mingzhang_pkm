@@ -26,6 +26,14 @@ private extension XCUIApplication {
     }
 }
 
+private extension XCUIElement {
+    func clearAndTypeText(_ text: String, deleteCount: Int = 30) {
+        tap()
+        typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: deleteCount))
+        typeText(text)
+    }
+}
+
 /// 导入记忆预填 UI 集成测试
 /// 通过 launchEnvironment 注入测试数据，绕过剪贴板权限弹窗
 final class ImportMemoryUITests: XCTestCase {
@@ -57,7 +65,7 @@ final class ImportMemoryUITests: XCTestCase {
         """
     }
 
-    func wechatCSV(counterparty: String, product: String, orderId: String = "WX-T-001") -> String {
+    func wechatCSV(counterparty: String, product: String, amount: String = "20.50", orderId: String = "WX-T-001") -> String {
         return """
         微信支付账单明细,,,,,,,,
         微信昵称：[test],,,,,,,,
@@ -66,11 +74,11 @@ final class ImportMemoryUITests: XCTestCase {
         导出时间：[2026-05-11 10:00:00],,,,,,,,
         ,,,,,,,,
         共1笔记录,,,,,,,,
-        支出：1笔 20.50元,,,,,,,,
+        支出：1笔 \(amount)元,,,,,,,,
         ,,,,,,,,
         ----------------------微信支付账单明细列表--------------------,,,,,,,,
         交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注
-        2026-04-16 08:05:06,商户消费,\(counterparty),\(product),支出,¥20.50,零钱,支付成功,\(orderId)\t,WX-M-001\t,/
+        2026-04-16 08:05:06,商户消费,\(counterparty),\(product),支出,¥\(amount),零钱,支付成功,\(orderId)\t,WX-M-001\t,/
         """
     }
 
@@ -137,6 +145,12 @@ final class ImportMemoryUITests: XCTestCase {
         let cancelButton = app.buttons["month_picker_cancel"].firstMatch
         if cancelButton.waitForExistence(timeout: 2) {
             cancelButton.tap()
+        }
+    }
+
+    func closeImportSheetIfNeeded() {
+        if app.staticTexts["账单导入"].waitForExistence(timeout: 3) {
+            closePresentedSheet()
         }
     }
 
@@ -338,6 +352,223 @@ final class ImportMemoryUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["数据清空确认"].waitForExistence(timeout: 5))
         captureV51Screenshot("15-数据清空确认")
         tapBackButton()
+    }
+
+    func testManualJournalCreatesUpdatesDeletesAndRefreshesSummaries() {
+        continueAfterFailure = false
+        app.launch()
+
+        app.waitForMingZhangTab("流水").tap()
+        tapVisibleButton(identifier: "btn_new_record")
+        XCTAssertTrue(app.staticTexts["记一笔"].waitForExistence(timeout: 5))
+        tapVisibleButton(identifier: "btn_save")
+
+        let createdRow = app.buttons
+            .matching(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "午餐", "100.00"))
+            .firstMatch
+        XCTAssertTrue(createdRow.waitForExistence(timeout: 10))
+
+        app.waitForMingZhangTab("资产负债").tap()
+        let liabilityRow = app.buttons["liability_row_广发卡"].firstMatch
+        XCTAssertTrue(liabilityRow.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["100.00"].exists)
+
+        app.waitForMingZhangTab("流水").tap()
+        XCTAssertTrue(createdRow.waitForExistence(timeout: 5))
+        createdRow.tap()
+        XCTAssertTrue(app.staticTexts["记录详情"].waitForExistence(timeout: 5))
+
+        let noteField = app.textFields["field_note"].firstMatch
+        XCTAssertTrue(noteField.waitForExistence(timeout: 5))
+        noteField.tap()
+        noteField.typeText("编辑")
+        tapVisibleButton(identifier: "btn_save")
+
+        let updatedRow = app.buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "journal_record_row_"))
+            .firstMatch
+        XCTAssertTrue(updatedRow.waitForExistence(timeout: 10))
+
+        app.waitForMingZhangTab("资产负债").tap()
+        XCTAssertTrue(app.staticTexts["100.00"].waitForExistence(timeout: 5))
+
+        app.waitForMingZhangTab("流水").tap()
+        let persistedRow = app.buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "journal_record_row_"))
+            .firstMatch
+        XCTAssertTrue(persistedRow.waitForExistence(timeout: 5))
+        persistedRow.tap()
+        let persistedNoteField = app.textFields["field_note"].firstMatch
+        XCTAssertTrue(persistedNoteField.waitForExistence(timeout: 5))
+        XCTAssertTrue((persistedNoteField.value as? String ?? "").contains("编辑"))
+        tapVisibleButton(identifier: "btn_delete_record")
+        let sheetDelete = app.sheets.buttons["删除记录"].firstMatch
+        if sheetDelete.waitForExistence(timeout: 3) {
+            sheetDelete.tap()
+        } else {
+            let confirmDelete = app.buttons["删除记录"].firstMatch
+            XCTAssertTrue(confirmDelete.waitForExistence(timeout: 5))
+            confirmDelete.tap()
+        }
+
+        XCTAssertTrue(app.staticTexts["当前账月暂无流水"].waitForExistence(timeout: 10))
+        app.waitForMingZhangTab("资产负债").tap()
+        XCTAssertFalse(app.buttons["liability_row_广发卡"].waitForExistence(timeout: 3))
+    }
+
+    func testHomeQuickAddCreatesManualRecordAndOpensRecentDetail() {
+        continueAfterFailure = false
+        app.launch()
+
+        app.waitForMingZhangTab("首页").tap()
+        XCTAssertTrue(app.staticTexts["收支摘要"].waitForExistence(timeout: 5))
+        tapVisibleButton(identifier: "btn_home_quick_add")
+
+        let quickJournalButton = app.buttons["记一笔"].firstMatch
+        XCTAssertTrue(quickJournalButton.waitForExistence(timeout: 5))
+        quickJournalButton.tap()
+
+        XCTAssertTrue(app.staticTexts["记一笔"].waitForExistence(timeout: 5))
+        tapVisibleButton(identifier: "btn_save")
+
+        app.waitForMingZhangTab("首页").tap()
+        XCTAssertTrue(app.staticTexts["收支摘要"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["最近账目"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["100.00"].waitForExistence(timeout: 10))
+
+        let recentRow = app.buttons
+            .matching(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "午餐", "100.00"))
+            .firstMatch
+        XCTAssertTrue(recentRow.waitForExistence(timeout: 10))
+        recentRow.tap()
+
+        XCTAssertTrue(app.staticTexts["记录详情"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["field_note"].firstMatch.waitForExistence(timeout: 5))
+    }
+
+    func testStatisticsCategorySourceRecordsOpenJournalDetail() {
+        continueAfterFailure = false
+        addSetupStep(
+            index: 0,
+            csv: alipayCSV(counterparty: "统计来源店", product: "统计午餐", amount: "42.00", orderId: "STAT-SOURCE-001"),
+            type: "生活必要开支",
+            detail: "伙食费"
+        )
+        app.launch()
+
+        app.waitForMingZhangTab("统计").tap()
+        XCTAssertTrue(app.staticTexts["结果总览"].waitForExistence(timeout: 10))
+        tapVisibleButton(identifier: "structure_item_生活必要开支")
+        XCTAssertTrue(app.staticTexts["近 6 个月趋势"].waitForExistence(timeout: 5))
+        tapVisibleButton(identifier: "category_detail_source_records_button")
+
+        XCTAssertTrue(app.textFields["source_records_search_field"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["当前筛选"].exists)
+
+        let sourceRow = app.buttons
+            .matching(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "伙食费", "42.00"))
+            .firstMatch
+        XCTAssertTrue(sourceRow.waitForExistence(timeout: 10))
+        sourceRow.tap()
+
+        XCTAssertTrue(app.staticTexts["记录详情"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["导入来源"].waitForExistence(timeout: 5))
+    }
+
+    func testAlipayImportConfirmCreatesJournalRecordAndTrace() {
+        continueAfterFailure = false
+        addSetupStep(
+            index: 0,
+            csv: alipayCSV(counterparty: "确认咖啡店", product: "拿铁", amount: "18.00", orderId: "ALIPAY-CONFIRM-HISTORY"),
+            type: "生活必要开支",
+            detail: "伙食费"
+        )
+        setTestImport(csv: alipayCSV(counterparty: "确认咖啡店", product: "拿铁", amount: "25.00", orderId: "ALIPAY-CONFIRM-NEW"))
+        app.launch()
+
+        navigateToImport(source: "alipay")
+        assertClassificationDisplayed(type: "生活必要开支", detail: "伙食费")
+        tapVisibleButton(identifier: "import-select-all-btn")
+        tapVisibleButton(identifier: "import-confirm-btn")
+        closeImportSheetIfNeeded()
+
+        app.waitForMingZhangTab("流水").tap()
+        let importedRow = app.buttons
+            .matching(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "伙食费", "25.00"))
+            .firstMatch
+        XCTAssertTrue(importedRow.waitForExistence(timeout: 10))
+        importedRow.tap()
+        XCTAssertTrue(app.staticTexts["记录详情"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["导入来源"].waitForExistence(timeout: 5))
+    }
+
+    func testWechatImportConfirmCreatesJournalRecordAndTrace() {
+        continueAfterFailure = false
+        setTestImport(
+            csv: wechatCSV(counterparty: "确认便利店", product: "饮料", orderId: "WECHAT-CONFIRM-NEW"),
+            source: "wechat"
+        )
+        app.launch()
+
+        navigateToImport(source: "wechat")
+        assertClassificationDisplayed(method: "待补真实账户")
+        tapVisibleButton(identifier: "import-select-all-btn")
+        tapVisibleButton(identifier: "import-batch-edit-btn")
+        XCTAssertTrue(app.staticTexts["批量修改"].waitForExistence(timeout: 5))
+        tapVisibleButton(identifier: "batch-edit-type-picker")
+        app.buttons["生活必要开支"].firstMatch.tap()
+        tapVisibleButton(identifier: "batch-edit-detail-picker")
+        app.buttons["伙食费"].firstMatch.tap()
+        tapVisibleButton(identifier: "batch-edit-apply-btn")
+        assertClassificationDisplayed(method: "待补真实账户", type: "生活必要开支", detail: "伙食费")
+        if app.staticTexts["已选 0 条"].exists {
+            tapVisibleButton(identifier: "import-select-all-btn")
+        }
+        tapVisibleButton(identifier: "import-confirm-btn")
+        closeImportSheetIfNeeded()
+
+        app.waitForMingZhangTab("流水").tap()
+        let importedRow = app.buttons
+            .matching(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "伙食费", "20.50"))
+            .firstMatch
+        XCTAssertTrue(importedRow.waitForExistence(timeout: 10))
+        importedRow.tap()
+        XCTAssertTrue(app.staticTexts["记录详情"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["导入来源"].waitForExistence(timeout: 5))
+    }
+
+    func testSettingsCanCreateTypeDetailAndSemanticTags() {
+        continueAfterFailure = false
+        app.launch()
+
+        app.waitForMingZhangTab("设置").tap()
+        XCTAssertTrue(app.staticTexts["记账配置"].waitForExistence(timeout: 5))
+        tapVisibleButton(identifier: "settings_payment_types")
+        XCTAssertTrue(app.staticTexts["收付类型与明细"].waitForExistence(timeout: 5))
+
+        tapVisibleButton(identifier: "payment_type_add")
+        XCTAssertTrue(app.staticTexts["新增收付类型"].waitForExistence(timeout: 5))
+        app.textFields["payment_type_name_field"].firstMatch.clearAndTypeText("UI测试支出")
+        app.textFields["payment_type_semantic_tags_field"].firstMatch.clearAndTypeText("支出，验收")
+        app.textFields["payment_type_description_field"].firstMatch.tap()
+        app.textFields["payment_type_description_field"].firstMatch.typeText("UI语义描述")
+        tapVisibleButton(identifier: "payment_type_save")
+
+        let typeRow = app.buttons["payment_type_row_UI测试支出"].firstMatch
+        XCTAssertTrue(typeRow.waitForExistence(timeout: 10))
+        tapVisibleButton(identifier: "payment_detail_add_UI测试支出")
+        XCTAssertTrue(app.staticTexts["新增类型明细"].waitForExistence(timeout: 5))
+        app.textFields["payment_detail_name_field"].firstMatch.clearAndTypeText("UI测试明细")
+        app.textFields["payment_detail_description_field"].firstMatch.tap()
+        app.textFields["payment_detail_description_field"].firstMatch.typeText("明细语义描述")
+        app.textFields["payment_detail_semantic_tags_field"].firstMatch.clearAndTypeText("递延资产，验收")
+        tapVisibleButton(identifier: "payment_detail_save")
+
+        let detailRow = app.buttons["payment_detail_row_UI测试明细"].firstMatch
+        XCTAssertTrue(detailRow.waitForExistence(timeout: 10))
+        detailRow.tap()
+        XCTAssertTrue(app.staticTexts["类型明细编辑"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.textFields["payment_detail_semantic_tags_field"].firstMatch.value as? String, "递延资产，验收")
     }
 
     func testSettingsCanCreateAndDisablePaymentMethod() {
@@ -781,5 +1012,48 @@ final class InvestmentLedgerUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["当前筛选"].exists)
         let repaymentRecord = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "广发卡还款")).firstMatch
         XCTAssertTrue(repaymentRecord.waitForExistence(timeout: 5))
+    }
+
+    func testLiabilityDetailCreatesInterestCostAndRefreshesTrace() {
+        continueAfterFailure = false
+        addSetupStep(
+            index: 0,
+            csv: alipayCSV(counterparty: "信用卡商户", product: "月度账单", amount: "100.00", orderId: "P1-LIABILITY-COST-001"),
+            type: "生活必要开支",
+            detail: "伙食费"
+        )
+        app.launch()
+
+        app.waitForMingZhangTab("资产负债").tap()
+        let liabilityRow = app.buttons["liability_row_广发卡"]
+        XCTAssertTrue(liabilityRow.waitForExistence(timeout: 10))
+        liabilityRow.tap()
+
+        XCTAssertTrue(app.staticTexts["剩余负债"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["利息/费用成本"].exists)
+        XCTAssertTrue(app.staticTexts["100.00"].exists)
+
+        tapVisibleButton(identifier: "liability_cost_button")
+        XCTAssertTrue(app.staticTexts["补利息 / 费用"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["财务费用开支"].exists)
+        XCTAssertTrue(app.staticTexts["金融利息支出"].exists)
+        XCTAssertTrue(app.staticTexts["广发卡"].exists)
+
+        let amountField = app.textFields["field_amount"].firstMatch
+        XCTAssertTrue(amountField.waitForExistence(timeout: 5))
+        amountField.tap()
+        amountField.typeText("12.34")
+        app.swipeUp()
+        tapVisibleButton(identifier: "btn_save")
+
+        XCTAssertTrue(app.staticTexts["剩余负债"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["112.34"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["12.34"].exists)
+        XCTAssertTrue(app.staticTexts["2 条"].waitForExistence(timeout: 5))
+
+        tapVisibleButton(identifier: "liability_source_records_button")
+        XCTAssertTrue(app.textFields["source_records_search_field"].waitForExistence(timeout: 10))
+        let costRecord = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "广发卡利息")).firstMatch
+        XCTAssertTrue(costRecord.waitForExistence(timeout: 5))
     }
 }

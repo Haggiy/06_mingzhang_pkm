@@ -2635,13 +2635,17 @@ struct ImportBatchEditView: View {
                         }
                         MZDivider()
                         MZMenuRow(title: "收付手段", selection: $paymentMethodName, options: [""] + store.activePaymentMethods.map(\.name))
+                            .accessibilityIdentifier("batch-edit-method-picker")
                         MZDivider()
                         MZMenuRow(title: "收付类型", selection: $paymentTypeName, options: [""] + store.activePaymentTypes.map(\.name))
+                            .accessibilityIdentifier("batch-edit-type-picker")
                         MZDivider()
                         MZMenuRow(title: "类型明细", selection: $paymentDetailName, options: [""] + availableDetails.map(\.name))
+                            .accessibilityIdentifier("batch-edit-detail-picker")
                         if isLiabilityRepaymentBatch {
                             MZDivider()
                             MZMenuRow(title: "负债对象", selection: $liabilityObjectKey, options: [""] + liabilityObjectOptions)
+                                .accessibilityIdentifier("batch-edit-liability-object-picker")
                         }
                     }
 
@@ -2650,6 +2654,7 @@ struct ImportBatchEditView: View {
                             dismiss()
                         }
                     }
+                    .accessibilityIdentifier("batch-edit-apply-btn")
                 }
             }
             .navigationBarBackButtonHidden(true)
@@ -2694,6 +2699,7 @@ struct JournalFormView: View {
     enum Mode: Equatable {
         case create
         case liabilityRepayment(item: BalanceItem, accountMonth: String)
+        case liabilityCost(item: BalanceItem, accountMonth: String, kind: LiabilityCostKind)
         case edit(JournalRecord)
     }
 
@@ -2710,6 +2716,8 @@ struct JournalFormView: View {
             _input = State(initialValue: .p0Default())
         case .liabilityRepayment(let item, let accountMonth):
             _input = State(initialValue: .liabilityRepayment(item: item, accountMonth: accountMonth))
+        case .liabilityCost(let item, let accountMonth, let kind):
+            _input = State(initialValue: .liabilityCost(item: item, accountMonth: accountMonth, kind: kind))
         case .edit(let record):
             _input = State(initialValue: .from(record: record))
         }
@@ -2741,13 +2749,17 @@ struct JournalFormView: View {
                             .keyboardType(.decimalPad)
                             .accessibilityIdentifier("field_amount")
                     }
+                    if isLiabilityCostMode {
+                        MZDivider()
+                        liabilityCostKindPicker
+                    }
                     MZDivider()
                     MZMenuRow(title: "收付类型", required: true, selection: $input.paymentTypeName, options: paymentTypeOptions)
                         .accessibilityIdentifier("picker_payment_type")
                     MZDivider()
                     MZMenuRow(title: "类型明细", required: true, selection: $input.paymentDetailName, options: availableDetails.map(\.name))
                         .accessibilityIdentifier("picker_payment_detail")
-                    if isLiabilityRepaymentForm {
+                    if usesLiabilityObject {
                         MZDivider()
                         liabilityObjectMenuRow
                             .accessibilityIdentifier("picker_liability_object")
@@ -2825,6 +2837,8 @@ struct JournalFormView: View {
             "记一笔"
         case .liabilityRepayment:
             "记还款"
+        case .liabilityCost:
+            "补利息 / 费用"
         case .edit:
             "记录详情"
         }
@@ -2832,7 +2846,7 @@ struct JournalFormView: View {
 
     private var sourceText: String {
         switch mode {
-        case .create, .liabilityRepayment:
+        case .create, .liabilityRepayment, .liabilityCost:
             "手工记录"
         case .edit(let record):
             record.recordSource.longDisplayName
@@ -2841,7 +2855,7 @@ struct JournalFormView: View {
 
     private var kindText: String {
         switch mode {
-        case .create, .liabilityRepayment:
+        case .create, .liabilityRepayment, .liabilityCost:
             "普通记录"
         case .edit(let record):
             record.recordKind == .carryForward ? "固定 / 继承记录" : "普通记录"
@@ -2850,7 +2864,7 @@ struct JournalFormView: View {
 
     private var isEditableRecord: Bool {
         switch mode {
-        case .create, .liabilityRepayment:
+        case .create, .liabilityRepayment, .liabilityCost:
             true
         case .edit(let record):
             record.isDirectlyEditable
@@ -2861,15 +2875,22 @@ struct JournalFormView: View {
         switch mode {
         case .create, .liabilityRepayment:
             return store.createRecord(input: input)
+        case .liabilityCost:
+            return store.createLiabilityCost(input: input)
         case .edit(let record):
             return store.updateRecord(id: record.id, input: input)
         }
     }
 
     private var paymentMethodOptions: [String] {
-        let methods = isLiabilityRepaymentForm
-            ? store.activePaymentMethods.filter { $0.methodType == .asset }
-            : store.activePaymentMethods
+        let methods: [PaymentMethod]
+        if isLiabilityRepaymentForm {
+            methods = store.activePaymentMethods.filter { $0.methodType == .asset }
+        } else if isLiabilityCostMode {
+            methods = store.activePaymentMethods.filter { $0.methodType == .liability }
+        } else {
+            methods = store.activePaymentMethods
+        }
         var names = methods.map(\.name)
         if !input.paymentMethodName.isEmpty, !names.contains(input.paymentMethodName) {
             names.append(input.paymentMethodName)
@@ -2878,6 +2899,9 @@ struct JournalFormView: View {
     }
 
     private var paymentTypeOptions: [String] {
+        if isLiabilityCostMode {
+            return ["财务费用开支"]
+        }
         var names = store.activePaymentTypes.map(\.name)
         if !input.paymentTypeName.isEmpty, !names.contains(input.paymentTypeName) {
             names.append(input.paymentTypeName)
@@ -2886,6 +2910,15 @@ struct JournalFormView: View {
     }
 
     private var availableDetails: [PaymentDetail] {
+        if isLiabilityCostMode {
+            let names = Set(LiabilityCostKind.allCases.map(\.paymentDetailName))
+            let active = store.activePaymentDetails.filter { names.contains($0.name) }
+            if let current = store.details.first(where: { $0.name == input.paymentDetailName }),
+               !active.contains(where: { $0.id == current.id }) {
+                return active + [current]
+            }
+            return active
+        }
         guard let typeId = store.types.first(where: { $0.name == input.paymentTypeName })?.id else {
             return store.activePaymentDetails
         }
@@ -2899,6 +2932,17 @@ struct JournalFormView: View {
 
     private var isLiabilityRepaymentForm: Bool {
         input.paymentTypeName == "负债类减记" || input.paymentDetailName.contains("还款")
+    }
+
+    private var isLiabilityCostMode: Bool {
+        if case .liabilityCost = mode {
+            return true
+        }
+        return false
+    }
+
+    private var usesLiabilityObject: Bool {
+        isLiabilityRepaymentForm || isLiabilityCostMode
     }
 
     private var liabilityObjectOptions: [(key: String, name: String)] {
@@ -2935,6 +2979,21 @@ struct JournalFormView: View {
         }
     }
 
+    private var liabilityCostKindPicker: some View {
+        MZFieldRow(title: "成本类型", required: true) {
+            Picker("成本类型", selection: Binding(
+                get: { input.liabilityCostKind },
+                set: { input.applyLiabilityCostKind($0) }
+            )) {
+                ForEach(LiabilityCostKind.allCases, id: \.self) { kind in
+                    Text(kind.displayName).tag(kind)
+                }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("picker_liability_cost_kind")
+        }
+    }
+
     private func normalizeConfigSelection() {
         if case .create = mode {
             if !store.activePaymentMethods.contains(where: { $0.name == input.paymentMethodName }) {
@@ -2947,6 +3006,12 @@ struct JournalFormView: View {
         if case .liabilityRepayment = mode {
             if !store.activePaymentMethods.contains(where: { $0.name == input.paymentMethodName && $0.methodType == .asset }) {
                 input.paymentMethodName = store.activePaymentMethods.first(where: { $0.methodType == .asset })?.name ?? input.paymentMethodName
+            }
+        }
+        if case .liabilityCost = mode {
+            input.paymentTypeName = "财务费用开支"
+            if !store.activePaymentMethods.contains(where: { $0.name == input.paymentMethodName && $0.methodType == .liability }) {
+                input.paymentMethodName = store.activePaymentMethods.first(where: { $0.methodType == .liability })?.name ?? input.paymentMethodName
             }
         }
         normalizeDetailSelection()
@@ -3138,7 +3203,7 @@ struct BalanceView: View {
                 }
 
                 MZCard(spacing: 0) {
-                    sectionHeader(title: "资产（成本口径）", amount: store.balanceSummary.cashBalance)
+                    sectionHeader(title: "资产（成本口径）", amount: store.balanceSummary.cashBalance + deferredBookValue)
                     NavigationLink {
                         AssetDetailView(
                             title: "现金类资产",
@@ -3152,7 +3217,7 @@ struct BalanceView: View {
                     MZDivider()
                     listAmountRow(title: "电子钱包余额", amount: store.balanceSummary.cashBalance, showChevron: false)
                     MZDivider()
-                    listAmountRow(title: "长期待摊费用", amount: 0, showChevron: false)
+                    listAmountRow(title: "长期待摊费用", amount: deferredBookValue, showChevron: false)
                 }
 
                 MZCard(spacing: 0) {
@@ -3198,11 +3263,15 @@ struct BalanceView: View {
     }
 
     private var assetTotal: Decimal {
-        store.balanceSummary.cashBalance + investmentBookValue
+        store.balanceSummary.cashBalance + deferredBookValue + investmentBookValue
     }
 
     private var liabilityTotal: Decimal {
         store.balanceSummary.liabilityItems.reduce(Decimal.zero) { $0 + $1.amount }
+    }
+
+    private var deferredBookValue: Decimal {
+        store.balanceSummary.deferredItems.reduce(Decimal.zero) { $0 + $1.amount }
     }
 
     private var investmentBookValue: Decimal {
@@ -3506,7 +3575,12 @@ struct LiabilityDetailView: View {
                     }
                     .accessibilityIdentifier("liability_repayment_button")
                     MZDivider()
-                    MZIconRow(title: "补利息", subtitle: "生成财务费用开支流水，后续接入", systemImage: "plus.circle", tint: MZTheme.tertiaryInk)
+                    NavigationLink {
+                        JournalFormView(mode: .liabilityCost(item: currentItem, accountMonth: store.accountMonth, kind: .interest))
+                    } label: {
+                        MZIconRow(title: "补利息 / 费用", subtitle: "生成财务费用开支流水", systemImage: "plus.circle")
+                    }
+                    .accessibilityIdentifier("liability_cost_button")
                 }
             }
         }
@@ -4177,7 +4251,7 @@ struct StatisticsView: View {
                     MZDivider()
                     SummaryLine(title: "负债减少", value: "0.00")
                     MZDivider()
-                    SummaryLine(title: "递延资产释放", value: "0.00")
+                    SummaryLine(title: "递延资产释放", value: deferredReleasedAmount.moneyText)
                     MZDivider()
                     SummaryLine(title: "投资成本变化", value: store.investmentMonthlySummary.endingBookValue.moneyText)
                 }
@@ -4244,6 +4318,10 @@ struct StatisticsView: View {
     private func categoryTotal(for category: CategoryDisplayItem) -> Decimal {
         let incomeNames = Set(store.types.filter { $0.element == .income }.map(\.name))
         return incomeNames.contains(category.name) ? store.homeSummary.incomeTotal : store.homeSummary.expenseTotal
+    }
+
+    private var deferredReleasedAmount: Decimal {
+        store.balanceSummary.deferredItems.reduce(Decimal.zero) { $0 + $1.releasedAmount }
     }
 
     private var investmentUnrealizedGain: Decimal {

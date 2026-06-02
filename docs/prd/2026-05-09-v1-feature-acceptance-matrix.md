@@ -1,7 +1,7 @@
 # 新明账 iOS v1.0 功能清单与验收矩阵
 
 > 文档分类：PRD / 开发前置规格
-> 状态：开发输入草案
+> 状态：工程验收矩阵收口中（最近同步：2026-06-02）
 > 日期：2026-05-09
 > 范围：把 MVP PRD 与权威 Spec 转成 v1.0 功能范围、优先级和可验收场景矩阵。
 > 不展开：页面字段表、页面状态表、本地数据模型、引擎接口细节、SwiftUI 工程任务。
@@ -136,6 +136,116 @@ P2 不改变 v1.0 核心能力，只在 P0/P1 稳定后补齐体验。
 如果后续开发中出现上述需求，只能作为后续版本候选，不应混入 v1.0 任务拆分。
 
 ## 4. 验收矩阵
+
+### 4.0 v1.0 验收矩阵收口快照
+
+`事实`
+
+截至 2026-06-02，当前 iOS 工程入口为 `ios/MingZhang`，当前 Core 包入口为 `ios/MingZhang/Packages/MingZhangCore`。验收矩阵收口只覆盖 `A-01` 到 `A-12`，不新增预算、预测、AI、云同步、账号体系、多设备合并、银行 / 信用卡账单导入、贷款计划表、自动计息、复杂利率模型或非基金投资品类。
+
+当前自动化验证文件集中在：
+
+- Core 单元测试：`ios/MingZhang/Packages/MingZhangCore/Tests/MingZhangCoreTests/`
+- XCUITest：`ios/MingZhang/MingZhangUITests/MingZhangUITests.swift`
+
+| 场景 | 当前实现状态 | Core 自动化覆盖 | XCUITest 覆盖 | 缺口分级与补齐顺序 |
+| --- | --- | --- | --- | --- |
+| `A-01` 首页查看与快速入口 | 已通过：首页摘要、结构、最近账目、分类回溯、快速入口记账保存和最近记录详情已接入真实数据 | `P0LedgerFlowTests.testCreditCardExpenseCreatesLiabilityAndRecalculates`、`testCashExpenseReducesCashAssetAndRecalculates`、`testQueryJournalRecordsSupportsVisibleFieldFilters`、`testQueryJournalRecordsSupportsKeywordSearch` | `testV51PrimaryTabsExposeCoreSectionsAndQuickMenu`、`testHomeQuickAddCreatesManualRecordAndOpensRecentDetail` | 已补齐高风险路径 |
+| `A-02` 手工新增记录 | 已通过：新增、编辑、删除、流水详情、资产负债刷新已形成闭环 | `P0LedgerFlowTests.testCreditCardExpenseCreatesLiabilityAndRecalculates`、`testValidationRejectsInvalidManualRecordInputs`、`testZeroAmountManualRecordsCanBeCreatedAndUpdated` | `testManualJournalCreatesUpdatesDeletesAndRefreshesSummaries` | 已补齐高风险路径；保留人工验收时间精度展示 |
+| `A-03` 支付宝导入整理 | 已通过：解析、候选、分类整理、确认入账、来源追溯、导入记忆已有自动化覆盖 | `P1ImportFlowTests.testCreateImportBatchMapsAlipayAndWechatRowsToCandidates`、`testCreateImportBatchMapsAlipayXLSXRowsToCandidates`、`testUpdateAndBatchUpdateImportCandidatesDoNotChangeOccurredAt`、`testConfirmImportCandidatesCreatesImportRecordsAndRecalculates`、`testImportRecordCanTraceBackToBatchAndRawCandidate`、`testP1AlipayWechatImportEndToEnd` | `testAlipayImportConfirmCreatesJournalRecordAndTrace`，以及导入记忆相关 `testCorePrefill`、`testEditMemoryPrefillsCurrentClassification` 等 | 已补齐高风险路径；真实外部文件选择仍可人工验收 |
+| `A-04` 微信导入整理 | 已通过：CSV / XLSX 解析、无历史预填、批量补分类、确认入账、来源追溯已有自动化覆盖 | `P1ImportFlowTests.testCreateImportBatchMapsWechatXLSXRowsToCandidates`、`testCreateImportBatchMapsAlipayAndWechatRowsToCandidates`、`testUpdateAndBatchUpdateImportCandidatesDoNotChangeOccurredAt`、`testConfirmImportCandidatesCreatesImportRecordsAndRecalculates`、`testP1AlipayWechatImportEndToEnd` | `testWechatImportConfirmCreatesJournalRecordAndTrace` | 已补齐高风险路径；真实外部文件选择仍可人工验收 |
+| `A-05` 信用卡餐饮消费形成负债 | 已通过：信用消费形成支出与负债、现金不减少、修改 / 删除重算已有 Core 与 UI 覆盖 | `P0LedgerFlowTests.testCreditCardExpenseCreatesLiabilityAndRecalculates`、`testEngineRecalculationUpsertsExistingKeyWithoutDuplicates`、`testEngineRecalculationDeletesStaleKeyWhenFamilyChanges` | `testManualJournalCreatesUpdatesDeletesAndRefreshesSummaries` | 已补齐高风险路径 |
+| `A-06` 信用卡还款减少现金与负债 | 已通过：还款生成流水、现金减少、负债减少、跨月保留原消费账月已有覆盖 | `P1LiabilityRepaymentTests.testCreateLiabilityRepaymentReducesCashAndLiabilityAcrossMonths`、`testUpdatingAndDeletingRepaymentSynchronizesDerivedResults`、`testImportRepaymentCandidateCarriesLiabilityObjectKeyIntoJournalRecord`、`testRepaymentRequiresExplicitLiabilityObject` | `testLiabilityDetailCreatesRepaymentAndRefreshesSourceRecords` | 已补齐高风险路径 |
+| `A-07` 负债总览 | 已通过：负债对象详情、形成负债、已还款、利息 / 费用成本、来源回溯已有覆盖 | `P1LiabilityRepaymentTests.testCreateLiabilityCostIncreasesCostAndRemainingLiabilityWithoutTouchingCash`、`testLiabilityCostAndRepaymentCoexistInSameLiabilityObject`、`testUpdatingAndDeletingLiabilityCostSynchronizesDerivedResults`、`testCreateLiabilityRepaymentReducesCashAndLiabilityAcrossMonths` | `testLiabilityDetailCreatesRepaymentAndRefreshesSourceRecords`、`testLiabilityDetailCreatesInterestCostAndRefreshesTrace` | 已补齐高风险路径 |
+| `A-08` 基金卖出与平均成本法回填 | 已通过：平均成本法、投资回填、投资资产、来源回溯和交易新增 / 编辑 / 删除已有覆盖 | `P1InvestmentLedgerTests.testAverageCostCalculatesSellBookAmountAndLoss`、`testInvestmentSellCreatesFeedRecordsAndRecalculatesCashAndInvestmentAsset`、`testUpdatingAndDeletingInvestmentTransactionReplacesAffectedMonthlyFeeds`、`testInvestmentReadModelsAndFeedTraceExposeSourceTransactions` | `testInvestmentLedgerShowsInvestmentAssetEntryAndFundRow`、`testInvestmentTransactionFormCreatesEditsAndDeletesTransaction` | 已补齐高风险路径 |
+| `A-09` 预付费用与递延释放 | 部分通过：Core 已补预付形成递延资产、后续释放为消费、递延余额减少、来源可追溯；UI 已接入资产负债与统计只读展示，尚无完整释放操作入口 XCUITest | `P1DeferredAssetTests.testPrepaidExpenseFormsDeferredAssetAndReleaseRecognizesExpense` | 未覆盖专门 XCUITest | 必须补：若 v1.0 需要用户在 UI 发起释放，需补最小入口与 XCUITest；若 v1.0 仅按 Core 规则验收，则保留人工验收 |
+| `A-10` 结果异常回溯到流水 | 已通过：分类结果可进入来源流水筛选，来源流水可进入记录详情，修改真源后读模型重算已有覆盖 | `P0LedgerFlowTests.testQueryJournalRecordsSupportsVisibleFieldFilters`、`testQueryJournalRecordsSupportsKeywordSearch`、`testCreditCardExpenseCreatesLiabilityAndRecalculates`、`P1InvestmentLedgerTests.testInvestmentReadModelsAndFeedTraceExposeSourceTransactions` | `testV51PrimaryTabsExposeCoreSectionsAndQuickMenu`、`testStatisticsCategorySourceRecordsOpenJournalDetail`、`testLiabilityDetailCreatesRepaymentAndRefreshesSourceRecords` | 已补齐高风险路径 |
+| `A-11` 设置维护记账语义 | 已通过：收付手段、收付类型、类型明细、语义标签、停用和历史引用保护已有覆盖 | `P1SettingsFlowTests.testSeedIncludesFullDefaultSettingsAndSemanticMetadata`、`testRenamingReferencedSettingsUpdatesHistoricalRecordsAndReadModels`、`testDisabledSettingsRemainHistoricalButCannotBeUsedForFutureRecords`、`testHistoricalRecordCanBeEditedAfterReferencedSettingsAreDisabled` | `testSettingsCanCreateAndDisablePaymentMethod`、`testSettingsCanCreateTypeDetailAndSemanticTags` | 已补齐高风险路径 |
+| `A-12` 导出、备份、恢复 | 已通过：审计导出、备份 manifest、checksum、schema 校验、恢复回滚已有覆盖 | `P1BackupRestoreTests.testAuditExportIncludesTraceableJournalRows`、`testBackupPackageContainsManifestAndValidatesChecksum`、`testValidationRejectsTamperedChecksumAndUnsupportedSchema`、`testRestoreBackupRecreatesLedgerAndRollbackOnFailure` | `testBackupRestoreFlowUsesConfirmationAndShowsSuccess`、`testBackupRestoreRejectsInvalidBackupWithoutChangingData` | 已补齐高风险路径；真实系统文件分享 / 重装场景可人工验收 |
+
+`推断`
+
+收口补齐顺序应保持如下约束：
+
+1. 必须补：`A-09` 如果要在 v1.0 作为用户可操作能力交付，应补最小 UI 释放入口和 XCUITest；当前 Core 规则已经能先保护账务语义。
+2. 可人工验收：真实文件选择器、系统分享 / 文件保存、重装后恢复、少量视觉状态与外观一致性。
+
+### 4.0.1 Core 测试补齐计划
+
+`事实`
+
+- 已补 `P1DeferredAssetTests.testPrepaidExpenseFormsDeferredAssetAndReleaseRecognizesExpense`，覆盖递延资产形成、释放、余额、统计结果和 engine 来源回溯。
+- 已有 Core 全量测试覆盖 P0 手工记账、P1 导入、设置、投资、负债还款、负债利息 / 费用、备份恢复。
+
+`推断`
+
+Core 后续只建议补边界样例，不应扩成新功能：
+
+- 递延释放金额不能超过递延余额。
+- 同一递延对象跨多账月连续释放时，ending balance 覆盖 key 不重复追加。
+- 递延对象仍按 `Q-02` 的 v1.0 口径使用备注识别，不升级显式对象模型。
+
+### 4.0.2 XCUITest 补齐计划
+
+`事实`
+
+本次收口新增或补强的 UI 验收路径包括：
+
+- `testManualJournalCreatesUpdatesDeletesAndRefreshesSummaries`
+- `testAlipayImportConfirmCreatesJournalRecordAndTrace`
+- `testWechatImportConfirmCreatesJournalRecordAndTrace`
+- `testSettingsCanCreateTypeDetailAndSemanticTags`
+- `testHomeQuickAddCreatesManualRecordAndOpensRecentDetail`
+- `testStatisticsCategorySourceRecordsOpenJournalDetail`
+
+`推断`
+
+剩余 UI 自动化按风险排序：
+
+1. `A-09` 递延释放 UI：仅在确认 v1.0 要提供用户可操作入口时补。
+
+### 4.0.3 人工验收清单
+
+`事实`
+
+2026-06-02 已完成一轮自动化回归锁定：
+
+| 验证层级 | 命令 | 结果 |
+| --- | --- | --- |
+| Core 全量单元测试 | `cd ios/MingZhang/Packages/MingZhangCore && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` | 59 tests passed，0 failures |
+| 新增 UI 路径单跑 | `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project ios/MingZhang/MingZhang.xcodeproj -scheme MingZhang -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -clonedSourcePackagesDirPath ios/MingZhang/SourcePackages -only-testing:MingZhangUITests/ImportMemoryUITests/testHomeQuickAddCreatesManualRecordAndOpensRecentDetail -only-testing:MingZhangUITests/ImportMemoryUITests/testStatisticsCategorySourceRecordsOpenJournalDetail test` | 2 tests passed，0 failures |
+| MingZhang XCUITest 全量 | `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project ios/MingZhang/MingZhang.xcodeproj -scheme MingZhang -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -clonedSourcePackagesDirPath ios/MingZhang/SourcePackages test` | 22 tests passed，0 failures |
+
+2026-06-02 已完成真实样例文件的 Core 解析层核对。核对方式为在 `/tmp/mz-real-import-check` 临时 Swift executable 中依赖当前 `MingZhangCore`，调用 `LedgerUseCases.createImportBatch(source:fileName:data:)`；该临时检查器不确认入账、不修改仓库源码、不修改原始样例。
+
+| 真实样例 | 来源 | 解析候选数 | issue 数 | 账月范围 | 结论 |
+| --- | --- | ---: | ---: | --- | --- |
+| `evidence/raw/支付宝交易明细-20250401-20250501.csv` | 支付宝 | 384 | 0 | 2025-04 到 2025-05 | 解析层通过 |
+| `evidence/raw/支付宝交易明细-20250830-20251130.csv` | 支付宝 | 1059 | 0 | 2025-08 到 2025-11 | 解析层通过 |
+| `evidence/raw/微信支付账单-20250401-20250501.csv` | 微信 | 30 | 0 | 2025-04 | 解析层通过 |
+| `evidence/raw/微信支付账单流水文件-20200101-20200331.xlsx` | 微信 | 146 | 0 | 2020-01 到 2020-03 | 解析层通过 |
+
+`推断`
+
+以下项目适合 v1.0 收口时人工验收，不阻塞现有自动化回归：
+
+| 人工验收项 | 覆盖场景 | 当前自动化替代 | v1.0 收口状态 |
+| --- | --- | --- | --- |
+| 使用真实支付宝 CSV / XLSX 文件通过系统文件选择器导入 | `A-03` | Core 解析与导入确认、XCUITest 内置样例导入；真实支付宝 CSV 解析层已核对 | 系统文件选择器待人工执行；支付宝 XLSX 真实样例待补或待确认 |
+| 使用真实微信 CSV / XLSX 文件通过系统文件选择器导入 | `A-04` | Core 解析与导入确认、XCUITest 内置样例导入；真实微信 CSV / XLSX 解析层已核对 | 系统文件选择器待人工执行 |
+| 切换不同账月后核对首页、流水、资产负债、统计数字一致 | `A-01`、`A-05`、`A-06`、`A-07`、`A-10` | Core 读模型重算、主 Tab XCUITest、来源回溯 XCUITest | 待人工抽查 |
+| 对备份文件执行真实导出、清空本地数据、恢复、核对摘要 | `A-12` | `P1BackupRestoreTests`、备份恢复 XCUITest | 待人工执行 |
+| 检查递延资产在资产负债与统计页的只读展示是否符合账务口径 | `A-09` | `P1DeferredAssetTests` | 待人工执行；UI 释放入口另需口径确认 |
+| 检查空状态、错误提示、长文本备注、中文输入法下的表单体验 | `A-02`、`A-03`、`A-04`、`A-11` | 表单主路径 XCUITest | 待人工抽查 |
+
+### 4.0.4 文档更新策略
+
+`推断`
+
+- 本文维护 `A-01` 到 `A-12` 的验收口径、实现状态和验证覆盖，不记录代码实现细节。
+- `docs/work-plans/2026-05-08-ios-product-to-development-roadmap.md` 只同步阶段状态和下一步建议，不重复展开完整测试矩阵。
+- 若 `A-09` 的 UI 释放入口在 v1.0 继续推进，应同步更新 `docs/specs/2026-05-09-ios-page-field-state-spec.md` 的页面字段 / 状态；否则保持为 Core 规则与人工验收项。
+- 不做范围继续以本文件第 3 节为准，任何预算、预测、AI、云同步、账号体系、银行 / 信用卡账单导入、非基金投资品类都不得混入收口任务。
 
 ### A-01：首页查看与快速入口
 
