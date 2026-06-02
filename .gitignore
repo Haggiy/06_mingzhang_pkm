@@ -2,8 +2,19 @@
 .worktrees/
 tmp/
 .build/
+build/
 DerivedData/
 SourcePackages/
 xcuserdata/
 *.xcuserstate
 *.xcscmblueprint
+*.bak
+*.bak2
+__pycache__/
+*.py[cod]
+/main
+ios/MingZhang/add_uitest_target.py
+
+# 本地实验数据包含完整个人账单明细，默认不入库；保留汇总说明文档。
+docs/data/*
+!docs/data/2026-05-14-test-results.md
