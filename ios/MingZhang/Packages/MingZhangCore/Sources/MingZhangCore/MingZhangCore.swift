@@ -1684,6 +1684,11 @@ public final class LedgerUseCases: @unchecked Sendable {
             try requireActive(assetDetail)
             try requireActive(expenseType)
             try requireActive(expenseDetail)
+            let deferredItems = try deferredAccumulators(db, through: input.accountMonth)
+            let remainingAmount = roundCurrency(deferredItems[objectKey]?.remainingAmount ?? 0)
+            guard input.amount <= remainingAmount else {
+                throw MingZhangError.validation("递延释放金额不能超过递延余额")
+            }
 
             let now = Date()
             let assetReleaseRecord = JournalRecord(

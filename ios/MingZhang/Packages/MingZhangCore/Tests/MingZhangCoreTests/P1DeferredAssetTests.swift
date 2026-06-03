@@ -3,6 +3,35 @@ import XCTest
 @testable import MingZhangCore
 
 final class P1DeferredAssetTests: XCTestCase {
+    func testDeferredReleaseRejectsAmountGreaterThanRemainingBalance() throws {
+        let useCases = try makeUseCases()
+        let objectName = "12个月健身房费用(202601-202612)"
+        let objectKey = "deferred:\(objectName)"
+
+        _ = try useCases.createManualRecord(input: CreateManualRecordInput(
+            accountMonth: "2026-01",
+            occurredAt: try Date.iso8601("2026-01-05T10:00:00Z"),
+            paymentMethodName: "电子钱包余额",
+            amount: Decimal(1200),
+            paymentTypeName: "资产类支出",
+            paymentDetailName: "长期待摊费用",
+            objectKey: objectKey,
+            note: objectName
+        ))
+
+        XCTAssertThrowsError(try useCases.createDeferredRelease(input: CreateDeferredReleaseInput(
+            accountMonth: "2026-02",
+            occurredAt: try Date.iso8601("2026-02-28T00:00:00Z"),
+            deferredObjectKey: objectKey,
+            amount: Decimal(1201),
+            expensePaymentTypeName: "投资自身开支",
+            expensePaymentDetailName: "健身训练费",
+            note: "超过余额的释放"
+        ))) { error in
+            XCTAssertEqual(error as? MingZhangError, .validation("递延释放金额不能超过递延余额"))
+        }
+    }
+
     func testPrepaidExpenseFormsDeferredAssetAndReleaseRecognizesExpense() throws {
         let useCases = try makeUseCases()
         let objectName = "12个月健身房费用(202601-202612)"

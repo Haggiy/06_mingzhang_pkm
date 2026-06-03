@@ -550,6 +550,19 @@ final class LedgerStore: ObservableObject {
         }
     }
 
+    func createDeferredRelease(input: DeferredReleaseFormInput) -> Bool {
+        do {
+            guard let useCases else { return false }
+            let result = try useCases.createDeferredRelease(input: try input.toCreateInput())
+            accountMonth = result.assetReleaseRecord.accountMonth
+            try refresh()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
     func updateRecord(id: UUID, input: JournalFormInput) -> Bool {
         do {
             guard let useCases else { return false }
@@ -752,6 +765,76 @@ final class LedgerStore: ObservableObject {
         importIssues = result.issues
         selectedImportCandidateIds = []
         lastError = nil
+    }
+}
+
+struct DeferredReleaseFormInput: Equatable {
+    var accountMonth: String
+    var occurredAt: Date
+    var deferredObjectKey: String
+    var amountText: String
+    var expensePaymentTypeName: String
+    var expensePaymentDetailName: String
+    var note: String
+    var remainingAmount: Decimal
+
+    func parsedAmount() throws -> Decimal {
+        let trimmed = amountText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw MingZhangError.validation("金额不能为空")
+        }
+        guard let amount = Decimal(string: trimmed, locale: Locale(identifier: "en_US_POSIX")) else {
+            throw MingZhangError.validation("金额必须是有效数字")
+        }
+        return amount
+    }
+
+    func toCreateInput() throws -> CreateDeferredReleaseInput {
+        try validateRequiredFields()
+        let amount = try parsedAmount()
+        guard amount > 0 else {
+            throw MingZhangError.validation("递延释放金额必须大于 0")
+        }
+        guard amount <= remainingAmount else {
+            throw MingZhangError.validation("递延释放金额不能超过递延余额")
+        }
+        return CreateDeferredReleaseInput(
+            accountMonth: accountMonth,
+            occurredAt: occurredAt,
+            deferredObjectKey: deferredObjectKey,
+            amount: amount,
+            expensePaymentTypeName: expensePaymentTypeName,
+            expensePaymentDetailName: expensePaymentDetailName,
+            note: note.isEmpty ? nil : note
+        )
+    }
+
+    private func validateRequiredFields() throws {
+        if accountMonth.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw MingZhangError.validation("账月不能为空")
+        }
+        if deferredObjectKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw MingZhangError.validation("递延对象不能为空")
+        }
+        if expensePaymentTypeName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw MingZhangError.validation("收付类型不能为空")
+        }
+        if expensePaymentDetailName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw MingZhangError.validation("类型明细不能为空")
+        }
+    }
+
+    static func deferredRelease(item: DeferredBalanceItem, accountMonth: String, now: Date = Date()) -> DeferredReleaseFormInput {
+        DeferredReleaseFormInput(
+            accountMonth: accountMonth,
+            occurredAt: now,
+            deferredObjectKey: item.objectKey,
+            amountText: "",
+            expensePaymentTypeName: "投资自身开支",
+            expensePaymentDetailName: "健身训练费",
+            note: "",
+            remainingAmount: item.amount
+        )
     }
 }
 

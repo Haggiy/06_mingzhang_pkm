@@ -850,19 +850,28 @@ final class InvestmentLedgerUITests: XCTestCase {
         button.tap()
     }
 
-    func alipayCSV(counterparty: String, product: String, amount: String = "100.00", orderId: String = "T-001") -> String {
+    func alipayCSV(
+        counterparty: String,
+        product: String,
+        amount: String = "100.00",
+        orderId: String = "T-001",
+        paymentMethod: String = "广发卡"
+    ) -> String {
         """
         -------------------------支付宝（中国）网络技术有限公司  电子客户回单------------------------
         交易时间,交易对方,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
-        2026-04-15 12:30:45,餐饮美食,\(counterparty),/,\(product),支出,\(amount),广发卡,交易成功,\(orderId)\t,\t,,
+        2026-04-15 12:30:45,餐饮美食,\(counterparty),/,\(product),支出,\(amount),\(paymentMethod),交易成功,\(orderId)\t,\t,,
         """
     }
 
-    func addSetupStep(index: Int, csv: String, type: String, detail: String) {
+    func addSetupStep(index: Int, csv: String, type: String, detail: String, objectKey: String? = nil) {
         app.launchEnvironment["MZ_SETUP_\(index)_CSV"] = csv
         app.launchEnvironment["MZ_SETUP_\(index)_SOURCE"] = "alipay"
         app.launchEnvironment["MZ_SETUP_\(index)_TYPE"] = type
         app.launchEnvironment["MZ_SETUP_\(index)_DETAIL"] = detail
+        if let objectKey {
+            app.launchEnvironment["MZ_SETUP_\(index)_OBJECT_KEY"] = objectKey
+        }
     }
 
     func openInvestmentLedgerFromBalance() {
@@ -1055,5 +1064,87 @@ final class InvestmentLedgerUITests: XCTestCase {
         XCTAssertTrue(app.textFields["source_records_search_field"].waitForExistence(timeout: 10))
         let costRecord = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "广发卡利息")).firstMatch
         XCTAssertTrue(costRecord.waitForExistence(timeout: 5))
+    }
+
+    func testDeferredAssetReleaseCreatesExpenseAndRefreshesTrace() {
+        continueAfterFailure = false
+        let objectName = "12个月健身房费用(202601-202612)"
+        let objectKey = "deferred:\(objectName)"
+        addSetupStep(
+            index: 0,
+            csv: alipayCSV(
+                counterparty: "递延健身房",
+                product: objectName,
+                amount: "1200.00",
+                orderId: "P1-DEFERRED-001",
+                paymentMethod: "电子钱包余额"
+            ),
+            type: "资产类支出",
+            detail: "长期待摊费用",
+            objectKey: objectKey
+        )
+        app.launch()
+
+        app.waitForMingZhangTab("资产负债").tap()
+        tapVisibleButton(identifier: "asset_deferred_detail_entry", timeout: 10)
+
+        let deferredRow = app.buttons["deferred_asset_row_\(objectName)"].firstMatch
+        XCTAssertTrue(deferredRow.waitForExistence(timeout: 10))
+        deferredRow.tap()
+
+        XCTAssertTrue(app.staticTexts["未释放余额"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["deferred_detail_remaining_amount"].firstMatch.label, "1,200.00")
+        XCTAssertTrue(app.staticTexts["已释放"].exists)
+        XCTAssertTrue(app.staticTexts["0.00"].exists)
+
+        tapVisibleButton(identifier: "deferred_release_button")
+        XCTAssertTrue(app.staticTexts["释放递延资产"].waitForExistence(timeout: 5))
+
+        let monthField = app.textFields["deferred_release_account_month_field"].firstMatch
+        XCTAssertTrue(monthField.waitForExistence(timeout: 5))
+
+        let amountField = app.textFields["deferred_release_amount_field"].firstMatch
+        XCTAssertTrue(amountField.waitForExistence(timeout: 5))
+        amountField.tap()
+        amountField.typeText("120")
+
+        tapVisibleButton(identifier: "deferred_release_type_picker")
+        app.buttons["投资自身开支"].firstMatch.tap()
+        tapVisibleButton(identifier: "deferred_release_detail_picker")
+        app.buttons["健身训练费"].firstMatch.tap()
+
+        let noteField = app.textFields["deferred_release_note_field"].firstMatch
+        XCTAssertTrue(noteField.waitForExistence(timeout: 5))
+        noteField.tap()
+        noteField.typeText("12个月健身房费用 1/12")
+        app.swipeUp()
+        tapVisibleButton(identifier: "deferred_release_save_button")
+
+        XCTAssertTrue(app.staticTexts["未释放余额"].waitForExistence(timeout: 10))
+        let remainingAmount = app.staticTexts["deferred_detail_remaining_amount"].firstMatch
+        XCTAssertTrue(remainingAmount.waitForExistence(timeout: 5))
+        XCTAssertEqual(remainingAmount.label, "1,080.00")
+        XCTAssertTrue(app.staticTexts["已释放"].exists)
+        XCTAssertTrue(app.staticTexts["120.00"].exists)
+
+        tapVisibleButton(identifier: "deferred_source_records_button")
+        XCTAssertTrue(app.textFields["source_records_search_field"].waitForExistence(timeout: 10))
+        let releaseRecord = app.buttons
+            .matching(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "长期待摊费用", "-120.00"))
+            .firstMatch
+        XCTAssertTrue(releaseRecord.waitForExistence(timeout: 5))
+        tapBackButton()
+        tapBackButton()
+        tapBackButton()
+
+        app.waitForMingZhangTab("统计").tap()
+        XCTAssertTrue(app.staticTexts["递延资产释放"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["120.00"].exists)
+        tapVisibleButton(identifier: "structure_item_投资自身开支", timeout: 5)
+        tapVisibleButton(identifier: "category_detail_source_records_button", timeout: 5)
+        let expenseRecord = app.buttons
+            .matching(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "健身训练费", "120.00"))
+            .firstMatch
+        XCTAssertTrue(expenseRecord.waitForExistence(timeout: 10))
     }
 }

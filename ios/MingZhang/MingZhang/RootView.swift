@@ -3217,7 +3217,12 @@ struct BalanceView: View {
                     MZDivider()
                     listAmountRow(title: "电子钱包余额", amount: store.balanceSummary.cashBalance, showChevron: false)
                     MZDivider()
-                    listAmountRow(title: "长期待摊费用", amount: deferredBookValue, showChevron: false)
+                    NavigationLink {
+                        DeferredAssetListView()
+                    } label: {
+                        listAmountRow(title: "长期待摊费用", amount: deferredBookValue)
+                    }
+                    .accessibilityIdentifier("asset_deferred_detail_entry")
                 }
 
                 MZCard(spacing: 0) {
@@ -3468,6 +3473,247 @@ struct AssetDetailView: View {
             records = try store.querySourceRecords(recordIds: sourceRecordIds)
         } catch {
             store.lastError = error.localizedDescription
+        }
+    }
+}
+
+struct DeferredAssetListView: View {
+    @EnvironmentObject private var store: LedgerStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: "递延资产")
+            MZPage {
+                MZCard {
+                    Text(totalAmount.moneyText)
+                        .font(.largeTitle.weight(.bold))
+                        .monospacedDigit()
+                        .foregroundStyle(MZTheme.ink)
+                    Text("长期待摊费用未释放余额")
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                }
+
+                MZCard(padding: 0) {
+                    if items.isEmpty {
+                        MZEmptyState(title: "暂无递延资产", systemImage: "tray", subtitle: "预付费用会按稳定备注形成递延对象")
+                            .frame(maxWidth: .infinity)
+                            .padding(20)
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach(Array(items.enumerated()), id: \.element.objectKey) { index, item in
+                                NavigationLink {
+                                    DeferredAssetDetailView(item: item)
+                                } label: {
+                                    MZIconRow(
+                                        title: item.name,
+                                        subtitle: "形成 \(item.formedAmount.moneyText) / 已释放 \(item.releasedAmount.moneyText)",
+                                        systemImage: "calendar.badge.clock",
+                                        trailing: item.amount.moneyText
+                                    )
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 4)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("deferred_asset_row_\(item.name)")
+                                if index < items.count - 1 {
+                                    MZDivider().padding(.horizontal, 16)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+    }
+
+    private var items: [DeferredBalanceItem] {
+        store.balanceSummary.deferredItems
+    }
+
+    private var totalAmount: Decimal {
+        items.reduce(Decimal.zero) { $0 + $1.amount }
+    }
+}
+
+struct DeferredAssetDetailView: View {
+    @EnvironmentObject private var store: LedgerStore
+    let item: DeferredBalanceItem
+
+    private var currentItem: DeferredBalanceItem {
+        store.balanceSummary.deferredItems.first { $0.objectKey == item.objectKey } ?? item
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: currentItem.name)
+            MZPage {
+                MZCard {
+                    Text(currentItem.amount.moneyText)
+                        .font(.largeTitle.weight(.bold))
+                        .monospacedDigit()
+                        .foregroundStyle(MZTheme.ink)
+                        .accessibilityIdentifier("deferred_detail_remaining_amount")
+                    Text("未释放余额")
+                        .font(.subheadline)
+                        .foregroundStyle(MZTheme.secondaryInk)
+                }
+
+                MZCard {
+                    SummaryLine(title: "形成金额", value: currentItem.formedAmount.moneyText)
+                    MZDivider()
+                    SummaryLine(title: "已释放", value: currentItem.releasedAmount.moneyText)
+                    MZDivider()
+                    SummaryLine(title: "对象标识", value: currentItem.objectKey)
+                }
+
+                MZCard {
+                    NavigationLink {
+                        SourceRecordsView(
+                            title: "\(currentItem.name) 来源",
+                            filterDescription: "\(store.accountMonth.displayMonth) / 递延资产",
+                            recordIds: currentItem.sourceRecordIds
+                        )
+                    } label: {
+                        MZIconRow(title: "相关流水", subtitle: "查看预付形成和递延释放来源", systemImage: "list.bullet.rectangle", trailing: "\(currentItem.sourceRecordIds.count) 条")
+                    }
+                    .accessibilityIdentifier("deferred_source_records_button")
+                    if currentItem.amount > 0 {
+                        MZDivider()
+                        NavigationLink {
+                            DeferredReleaseFormView(item: currentItem, accountMonth: store.accountMonth)
+                        } label: {
+                            MZIconRow(title: "释放递延资产", subtitle: "生成递延减少和消费确认流水", systemImage: "arrow.down.forward.and.arrow.up.backward.circle")
+                        }
+                        .accessibilityIdentifier("deferred_release_button")
+                    }
+                }
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+    }
+}
+
+struct DeferredReleaseFormView: View {
+    @EnvironmentObject private var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
+    let item: DeferredBalanceItem
+    @State private var input: DeferredReleaseFormInput
+
+    init(item: DeferredBalanceItem, accountMonth: String) {
+        self.item = item
+        _input = State(initialValue: .deferredRelease(item: item, accountMonth: accountMonth))
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            MZBackHeader(title: "释放递延资产")
+            MZPage {
+                MZCard {
+                    SummaryLine(title: "递延对象", value: item.name)
+                    MZDivider()
+                    SummaryLine(title: "未释放余额", value: input.remainingAmount.moneyText)
+                    MZDivider()
+                    SummaryLine(title: "释放方式", value: "账务处理 / 长期待摊费用减少")
+                }
+
+                MZCard {
+                    MZFieldRow(title: "账月", required: true) {
+                        TextField("账月", text: $input.accountMonth)
+                            .textInputAutocapitalization(.never)
+                            .foregroundStyle(MZTheme.accent)
+                            .accessibilityIdentifier("deferred_release_account_month_field")
+                    }
+                    MZDivider()
+                    MZFieldRow(title: "时间", required: true) {
+                        DatePicker("", selection: $input.occurredAt, displayedComponents: [.date, .hourAndMinute])
+                            .labelsHidden()
+                    }
+                    MZDivider()
+                    MZFieldRow(title: "释放金额", required: true) {
+                        TextField("金额", text: $input.amountText)
+                            .keyboardType(.decimalPad)
+                            .accessibilityIdentifier("deferred_release_amount_field")
+                    }
+                    MZDivider()
+                    MZMenuRow(title: "消费分类", required: true, selection: $input.expensePaymentTypeName, options: expenseTypeOptions)
+                        .accessibilityIdentifier("deferred_release_type_picker")
+                    MZDivider()
+                    MZMenuRow(title: "类型明细", required: true, selection: $input.expensePaymentDetailName, options: availableDetails.map(\.name))
+                        .accessibilityIdentifier("deferred_release_detail_picker")
+                }
+
+                MZCard {
+                    Text("备注")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(MZTheme.ink)
+                    TextField("备注", text: $input.note, axis: .vertical)
+                        .lineLimit(3...5)
+                        .accessibilityIdentifier("deferred_release_note_field")
+                }
+
+                MZPrimaryButton(title: "保存释放", isDisabled: !canSave) {
+                    if store.createDeferredRelease(input: input) {
+                        dismiss()
+                    }
+                }
+                .accessibilityIdentifier("deferred_release_save_button")
+            }
+        }
+        .background(MZTheme.page)
+        .navigationBarBackButtonHidden(true)
+        .onAppear(perform: normalizeSelections)
+        .onChange(of: input.expensePaymentTypeName) {
+            normalizeDetailSelection()
+        }
+    }
+
+    private var expenseTypeOptions: [String] {
+        let active = store.activePaymentTypes.filter { $0.element == .expense }.map(\.name)
+        if !input.expensePaymentTypeName.isEmpty, !active.contains(input.expensePaymentTypeName) {
+            return active + [input.expensePaymentTypeName]
+        }
+        return active
+    }
+
+    private var availableDetails: [PaymentDetail] {
+        guard let typeId = store.types.first(where: { $0.name == input.expensePaymentTypeName })?.id else {
+            return []
+        }
+        let active = store.activePaymentDetails.filter { $0.paymentTypeId == typeId }
+        if let current = store.details.first(where: { $0.name == input.expensePaymentDetailName && $0.paymentTypeId == typeId }),
+           !active.contains(where: { $0.id == current.id }) {
+            return active + [current]
+        }
+        return active
+    }
+
+    private var canSave: Bool {
+        guard !input.accountMonth.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !input.deferredObjectKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !input.expensePaymentTypeName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !input.expensePaymentDetailName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let amount = Decimal(string: input.amountText.trimmingCharacters(in: .whitespacesAndNewlines), locale: Locale(identifier: "en_US_POSIX"))
+        else {
+            return false
+        }
+        return amount > 0 && amount <= input.remainingAmount
+    }
+
+    private func normalizeSelections() {
+        if !expenseTypeOptions.contains(input.expensePaymentTypeName) {
+            input.expensePaymentTypeName = expenseTypeOptions.first ?? input.expensePaymentTypeName
+        }
+        normalizeDetailSelection()
+    }
+
+    private func normalizeDetailSelection() {
+        let names = availableDetails.map(\.name)
+        if !names.contains(input.expensePaymentDetailName) {
+            input.expensePaymentDetailName = names.first ?? input.expensePaymentDetailName
         }
     }
 }
@@ -4364,26 +4610,56 @@ struct ExpenseCategoryDetailView: View {
 }
 
 struct BalanceChangeDetailView: View {
+    @EnvironmentObject private var store: LedgerStore
+
     var body: some View {
         VStack(spacing: 0) {
             MZBackHeader(title: "资产负债变化")
             MZPage {
                 MZCard {
-                    SummaryLine(title: "资产增加", value: "0.00")
+                    SummaryLine(title: "现金资产余额", value: store.balanceSummary.cashBalance.moneyText)
                     MZDivider()
-                    SummaryLine(title: "资产减少", value: "0.00")
+                    SummaryLine(title: "递延资产形成", value: deferredFormedAmount.moneyText)
                     MZDivider()
-                    SummaryLine(title: "负债增加", value: "0.00")
+                    SummaryLine(title: "递延资产释放", value: deferredReleasedAmount.moneyText)
                     MZDivider()
-                    SummaryLine(title: "负债减少", value: "0.00")
+                    SummaryLine(title: "递延资产余额", value: deferredRemainingAmount.moneyText)
                 }
                 MZCard {
-                    MZEmptyState(title: "来源按流水回溯", systemImage: "list.bullet.rectangle", subtitle: "有真实来源记录时，从这里回到来源流水筛选态")
+                    if deferredSourceRecordIds.isEmpty {
+                        MZEmptyState(title: "暂无递延来源", systemImage: "tray")
+                    } else {
+                        NavigationLink {
+                            SourceRecordsView(
+                                title: "递延资产来源",
+                                filterDescription: "\(store.accountMonth.displayMonth) / 递延资产",
+                                recordIds: deferredSourceRecordIds
+                            )
+                        } label: {
+                            MZIconRow(title: "递延资产来源", subtitle: "查看预付形成与释放流水", systemImage: "list.bullet.rectangle", trailing: "\(deferredSourceRecordIds.count) 条")
+                        }
+                    }
                 }
             }
         }
         .background(MZTheme.page)
         .navigationBarBackButtonHidden(true)
+    }
+
+    private var deferredFormedAmount: Decimal {
+        store.balanceSummary.deferredItems.reduce(Decimal.zero) { $0 + $1.formedAmount }
+    }
+
+    private var deferredReleasedAmount: Decimal {
+        store.balanceSummary.deferredItems.reduce(Decimal.zero) { $0 + $1.releasedAmount }
+    }
+
+    private var deferredRemainingAmount: Decimal {
+        store.balanceSummary.deferredItems.reduce(Decimal.zero) { $0 + $1.amount }
+    }
+
+    private var deferredSourceRecordIds: [UUID] {
+        Array(Set(store.balanceSummary.deferredItems.flatMap(\.sourceRecordIds))).sorted { $0.uuidString < $1.uuidString }
     }
 }
 

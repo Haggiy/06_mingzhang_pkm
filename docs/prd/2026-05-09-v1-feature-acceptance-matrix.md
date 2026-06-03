@@ -158,7 +158,7 @@ P2 不改变 v1.0 核心能力，只在 P0/P1 稳定后补齐体验。
 | `A-06` 信用卡还款减少现金与负债 | 已通过：还款生成流水、现金减少、负债减少、跨月保留原消费账月已有覆盖 | `P1LiabilityRepaymentTests.testCreateLiabilityRepaymentReducesCashAndLiabilityAcrossMonths`、`testUpdatingAndDeletingRepaymentSynchronizesDerivedResults`、`testImportRepaymentCandidateCarriesLiabilityObjectKeyIntoJournalRecord`、`testRepaymentRequiresExplicitLiabilityObject` | `testLiabilityDetailCreatesRepaymentAndRefreshesSourceRecords` | 已补齐高风险路径 |
 | `A-07` 负债总览 | 已通过：负债对象详情、形成负债、已还款、利息 / 费用成本、来源回溯已有覆盖 | `P1LiabilityRepaymentTests.testCreateLiabilityCostIncreasesCostAndRemainingLiabilityWithoutTouchingCash`、`testLiabilityCostAndRepaymentCoexistInSameLiabilityObject`、`testUpdatingAndDeletingLiabilityCostSynchronizesDerivedResults`、`testCreateLiabilityRepaymentReducesCashAndLiabilityAcrossMonths` | `testLiabilityDetailCreatesRepaymentAndRefreshesSourceRecords`、`testLiabilityDetailCreatesInterestCostAndRefreshesTrace` | 已补齐高风险路径 |
 | `A-08` 基金卖出与平均成本法回填 | 已通过：平均成本法、投资回填、投资资产、来源回溯和交易新增 / 编辑 / 删除已有覆盖 | `P1InvestmentLedgerTests.testAverageCostCalculatesSellBookAmountAndLoss`、`testInvestmentSellCreatesFeedRecordsAndRecalculatesCashAndInvestmentAsset`、`testUpdatingAndDeletingInvestmentTransactionReplacesAffectedMonthlyFeeds`、`testInvestmentReadModelsAndFeedTraceExposeSourceTransactions` | `testInvestmentLedgerShowsInvestmentAssetEntryAndFundRow`、`testInvestmentTransactionFormCreatesEditsAndDeletesTransaction` | 已补齐高风险路径 |
-| `A-09` 预付费用与递延释放 | 部分通过：Core 已补预付形成递延资产、后续释放为消费、递延余额减少、来源可追溯；UI 已接入资产负债与统计只读展示，尚无完整释放操作入口 XCUITest | `P1DeferredAssetTests.testPrepaidExpenseFormsDeferredAssetAndReleaseRecognizesExpense` | 未覆盖专门 XCUITest | 必须补：若 v1.0 需要用户在 UI 发起释放，需补最小入口与 XCUITest；若 v1.0 仅按 Core 规则验收，则保留人工验收 |
+| `A-09` 预付费用与递延释放 | 已通过：Core 已补预付形成递延资产、后续释放为消费、递延余额减少、来源可追溯和超额释放防御；UI 已补资产负债递延资产详情入口、释放表单、保存后余额 / 统计 / 来源回溯刷新 | `P1DeferredAssetTests.testPrepaidExpenseFormsDeferredAssetAndReleaseRecognizesExpense`、`testDeferredReleaseRejectsAmountGreaterThanRemainingBalance` | `testDeferredAssetReleaseCreatesExpenseAndRefreshesTrace` | 已补齐 v1.0 最小用户可操作路径；不包含自动摊销计划、周期规则或提醒 |
 | `A-10` 结果异常回溯到流水 | 已通过：分类结果可进入来源流水筛选，来源流水可进入记录详情，修改真源后读模型重算已有覆盖 | `P0LedgerFlowTests.testQueryJournalRecordsSupportsVisibleFieldFilters`、`testQueryJournalRecordsSupportsKeywordSearch`、`testCreditCardExpenseCreatesLiabilityAndRecalculates`、`P1InvestmentLedgerTests.testInvestmentReadModelsAndFeedTraceExposeSourceTransactions` | `testV51PrimaryTabsExposeCoreSectionsAndQuickMenu`、`testStatisticsCategorySourceRecordsOpenJournalDetail`、`testLiabilityDetailCreatesRepaymentAndRefreshesSourceRecords` | 已补齐高风险路径 |
 | `A-11` 设置维护记账语义 | 已通过：收付手段、收付类型、类型明细、语义标签、停用和历史引用保护已有覆盖 | `P1SettingsFlowTests.testSeedIncludesFullDefaultSettingsAndSemanticMetadata`、`testRenamingReferencedSettingsUpdatesHistoricalRecordsAndReadModels`、`testDisabledSettingsRemainHistoricalButCannotBeUsedForFutureRecords`、`testHistoricalRecordCanBeEditedAfterReferencedSettingsAreDisabled` | `testSettingsCanCreateAndDisablePaymentMethod`、`testSettingsCanCreateTypeDetailAndSemanticTags` | 已补齐高风险路径 |
 | `A-12` 导出、备份、恢复 | 已通过：审计导出、备份 manifest、checksum、schema 校验、恢复回滚已有覆盖 | `P1BackupRestoreTests.testAuditExportIncludesTraceableJournalRows`、`testBackupPackageContainsManifestAndValidatesChecksum`、`testValidationRejectsTamperedChecksumAndUnsupportedSchema`、`testRestoreBackupRecreatesLedgerAndRollbackOnFailure` | `testBackupRestoreFlowUsesConfirmationAndShowsSuccess`、`testBackupRestoreRejectsInvalidBackupWithoutChangingData` | 已补齐高风险路径；真实系统文件分享 / 重装场景可人工验收 |
@@ -167,7 +167,7 @@ P2 不改变 v1.0 核心能力，只在 P0/P1 稳定后补齐体验。
 
 收口补齐顺序应保持如下约束：
 
-1. 必须补：`A-09` 如果要在 v1.0 作为用户可操作能力交付，应补最小 UI 释放入口和 XCUITest；当前 Core 规则已经能先保护账务语义。
+1. 已补齐：`A-09` 按 v1.0 用户可操作能力交付，已有最小 UI 释放入口和 XCUITest；Core 规则继续保护账务语义。
 2. 可人工验收：真实文件选择器、系统分享 / 文件保存、重装后恢复、少量视觉状态与外观一致性。
 
 ### 4.0.1 Core 测试补齐计划
@@ -175,13 +175,13 @@ P2 不改变 v1.0 核心能力，只在 P0/P1 稳定后补齐体验。
 `事实`
 
 - 已补 `P1DeferredAssetTests.testPrepaidExpenseFormsDeferredAssetAndReleaseRecognizesExpense`，覆盖递延资产形成、释放、余额、统计结果和 engine 来源回溯。
+- 已补 `P1DeferredAssetTests.testDeferredReleaseRejectsAmountGreaterThanRemainingBalance`，覆盖递延释放金额不能超过递延余额。
 - 已有 Core 全量测试覆盖 P0 手工记账、P1 导入、设置、投资、负债还款、负债利息 / 费用、备份恢复。
 
 `推断`
 
 Core 后续只建议补边界样例，不应扩成新功能：
 
-- 递延释放金额不能超过递延余额。
 - 同一递延对象跨多账月连续释放时，ending balance 覆盖 key 不重复追加。
 - 递延对象仍按 `Q-02` 的 v1.0 口径使用备注识别，不升级显式对象模型。
 
@@ -197,12 +197,11 @@ Core 后续只建议补边界样例，不应扩成新功能：
 - `testSettingsCanCreateTypeDetailAndSemanticTags`
 - `testHomeQuickAddCreatesManualRecordAndOpensRecentDetail`
 - `testStatisticsCategorySourceRecordsOpenJournalDetail`
+- `testDeferredAssetReleaseCreatesExpenseAndRefreshesTrace`
 
 `推断`
 
-剩余 UI 自动化按风险排序：
-
-1. `A-09` 递延释放 UI：仅在确认 v1.0 要提供用户可操作入口时补。
+当前 `A-09` 最小 UI 闭环已补自动化。后续 UI 自动化只按真实缺陷或人工验收发现补，不扩新功能。
 
 ### 4.0.3 人工验收清单
 
@@ -212,9 +211,9 @@ Core 后续只建议补边界样例，不应扩成新功能：
 
 | 验证层级 | 命令 | 结果 |
 | --- | --- | --- |
-| Core 全量单元测试 | `cd ios/MingZhang/Packages/MingZhangCore && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` | 59 tests passed，0 failures |
+| Core 全量单元测试 | `cd ios/MingZhang/Packages/MingZhangCore && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` | 60 tests passed，0 failures |
 | 新增 UI 路径单跑 | `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project ios/MingZhang/MingZhang.xcodeproj -scheme MingZhang -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -clonedSourcePackagesDirPath ios/MingZhang/SourcePackages -only-testing:MingZhangUITests/ImportMemoryUITests/testHomeQuickAddCreatesManualRecordAndOpensRecentDetail -only-testing:MingZhangUITests/ImportMemoryUITests/testStatisticsCategorySourceRecordsOpenJournalDetail test` | 2 tests passed，0 failures |
-| MingZhang XCUITest 全量 | `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project ios/MingZhang/MingZhang.xcodeproj -scheme MingZhang -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -clonedSourcePackagesDirPath ios/MingZhang/SourcePackages test` | 22 tests passed，0 failures |
+| MingZhang XCUITest 全量 | `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project ios/MingZhang/MingZhang.xcodeproj -scheme MingZhang -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -clonedSourcePackagesDirPath ios/MingZhang/SourcePackages test` | 23 tests passed，0 failures |
 
 2026-06-02 已完成真实样例文件的 Core 解析层核对。核对方式为在 `/tmp/mz-real-import-check` 临时 Swift executable 中依赖当前 `MingZhangCore`，调用 `LedgerUseCases.createImportBatch(source:fileName:data:)`；该临时检查器不确认入账、不修改仓库源码、不修改原始样例。
 
@@ -235,7 +234,7 @@ Core 后续只建议补边界样例，不应扩成新功能：
 | 使用真实微信 CSV / XLSX 文件通过系统文件选择器导入 | `A-04` | Core 解析与导入确认、XCUITest 内置样例导入；真实微信 CSV / XLSX 解析层已核对 | 系统文件选择器待人工执行 |
 | 切换不同账月后核对首页、流水、资产负债、统计数字一致 | `A-01`、`A-05`、`A-06`、`A-07`、`A-10` | Core 读模型重算、主 Tab XCUITest、来源回溯 XCUITest | 待人工抽查 |
 | 对备份文件执行真实导出、清空本地数据、恢复、核对摘要 | `A-12` | `P1BackupRestoreTests`、备份恢复 XCUITest | 待人工执行 |
-| 检查递延资产在资产负债与统计页的只读展示是否符合账务口径 | `A-09` | `P1DeferredAssetTests` | 待人工执行；UI 释放入口另需口径确认 |
+| 检查递延资产在资产负债与统计页展示、释放表单中文输入和长备注体验是否符合账务口径 | `A-09` | `P1DeferredAssetTests`、`testDeferredAssetReleaseCreatesExpenseAndRefreshesTrace` | 账务主路径已自动化；表单体验待人工抽查 |
 | 检查空状态、错误提示、长文本备注、中文输入法下的表单体验 | `A-02`、`A-03`、`A-04`、`A-11` | 表单主路径 XCUITest | 待人工抽查 |
 
 ### 4.0.4 文档更新策略
@@ -244,7 +243,7 @@ Core 后续只建议补边界样例，不应扩成新功能：
 
 - 本文维护 `A-01` 到 `A-12` 的验收口径、实现状态和验证覆盖，不记录代码实现细节。
 - `docs/work-plans/2026-05-08-ios-product-to-development-roadmap.md` 只同步阶段状态和下一步建议，不重复展开完整测试矩阵。
-- 若 `A-09` 的 UI 释放入口在 v1.0 继续推进，应同步更新 `docs/specs/2026-05-09-ios-page-field-state-spec.md` 的页面字段 / 状态；否则保持为 Core 规则与人工验收项。
+- `A-09` 的 UI 释放入口已进入 v1.0 最小闭环，页面字段 / 状态已同步到 `docs/specs/2026-05-09-ios-page-field-state-spec.md`。
 - 不做范围继续以本文件第 3 节为准，任何预算、预测、AI、云同步、账号体系、银行 / 信用卡账单导入、非基金投资品类都不得混入收口任务。
 
 ### A-01：首页查看与快速入口
@@ -402,8 +401,8 @@ record_source：manual 或 import
 | 对应 PRD 场景 | 9. 用户记录一笔预付费用，后续账月通过继承行释放递延资产并确认消费 |
 | 覆盖功能 | `F-P1-09`、`F-P0-05` |
 | 前置数据 | 已有递延资产类型明细或语义标签；存在可识别对象 key |
-| 操作步骤 | 新增预付费用记录；查看递延资产形成；进入后续账月；查看或生成释放记录；查看结果视图 |
-| 预期结果 | 预付费用先形成递延资产；后续账月通过继承行或 engine 骨架释放为支出；递延资产余额减少；消费结果增加 |
+| 操作步骤 | 新增预付费用记录；在资产负债递延资产入口查看递延资产形成；进入递延对象详情；填写释放账月、释放金额、消费分类 / 类型明细和备注；保存；查看结果视图和来源回溯 |
+| 预期结果 | 预付费用先形成递延资产；释放保存后生成递延资产减少和消费确认流水；递延资产余额减少；消费结果增加；资产负债、统计、来源回溯同步刷新 |
 | 不通过条件 | 预付当月直接全额确认为消费；后续释放重复追加无法覆盖；释放结果不可追溯 |
 | 依据 | `PRD`、`MONTH`、`ENGINE` |
 

@@ -355,10 +355,11 @@ v1.0 可优先按本地结构化存储设计，具体实现可在 SwiftData 和 
 | `AdjustAssetBalance` | 账户 + 当前余额 + 时间 | 生成的调整流水 | 是 |
 | `CreateLiabilityRepayment` | 负债对象 + 金额 + 支付手段 + 时间 | 还款流水 | 是 |
 | `CreateLiabilityCost` | 负债对象 + 金额 + 时间 + 备注 | 利息 / 费用流水 | 是 |
+| `CreateDeferredRelease` | 递延对象 + 账月 + 时间 + 金额 + 消费分类 + 类型明细 + 备注 | 递延资产减少流水 + 消费确认流水 | 是 |
 
 `事实`
 
-调整余额、还款、补利息最终都必须生成流水记录，不直接改资产或负债余额。
+调整余额、还款、补利息、递延释放最终都必须生成流水记录，不直接改资产、负债或递延余额。递延释放金额必须大于 0 且不得超过该账月至当前递延对象未释放余额；输入的消费分类必须是支出类收付类型。
 
 ### 6.6 数据管理 Use Case
 
@@ -469,7 +470,7 @@ accountMonth + engineFamily + skeletonType + objectKey
 | --- | --- |
 | 2026-04 广发卡负债余额 | `2026-04:liability:ending_balance:liability:广发卡` |
 | 2026-04 电子钱包余额 | `2026-04:cash:ending_balance:cash_pool:电子钱包余额` |
-| 2026-04 健身房递延释放 | `2026-04:deferred:release:deferred:12个月健身房费用(202601-202612)` |
+| 2026-04 健身房递延余额 | `2026-04:deferred:ending_balance:deferred:12个月健身房费用(202601-202612)` |
 | 2026-04 总投资资产 | `2026-04:investment:ending_balance:investment:总投资资产` |
 
 ## 8. P0 纵向切片数据流
